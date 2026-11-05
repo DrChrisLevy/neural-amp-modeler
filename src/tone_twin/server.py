@@ -35,7 +35,7 @@ class RecordCommand(BaseModel):
 
 class TrainCommand(BaseModel):
     capture_id: str
-    epochs: int = Field(default=25, ge=10, le=100)
+    epochs: int = Field(default=100, ge=10, le=100)
     model_size: str = "lite"
 
 
