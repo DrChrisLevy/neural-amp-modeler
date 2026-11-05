@@ -6,8 +6,9 @@
   <meta name="theme-color" content="#101112">
   <meta name="description" content="Record your guitar. Learn your tone. Hear the difference.">
   <title>Tone Twin</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=2">
+  <script src="/static/loss-chart.js?v=2" defer></script>
+  <script src="/static/app.js?v=2" defer></script>
 </head>
 <body>
   <div class="studio">
@@ -22,6 +23,17 @@
         <div id="stage-value" class="stage-value" aria-live="off">00:00</div>
         <div class="stage-detail" id="stage-detail">A clean input. Your processed tone. One take.</div>
         <div class="waveform-wrap"><canvas id="waveform" aria-label="Audio waveform" role="img"></canvas><div class="waveform-message" id="waveform-message">Ready when you are.</div><button id="waveform-seek" class="waveform-seek" hidden aria-label="Seek audio" tabindex="-1"></button></div>
+        <section id="learning-panel" class="learning-panel" aria-label="Live training curves" hidden>
+          <div class="learning-topline"><span class="learning-eyebrow">THE LEARNING CURVE</span><span id="learning-state" class="learning-state">Waiting</span></div>
+          <div class="learning-progress" id="learning-progress" role="progressbar" aria-label="Training progress" aria-valuemin="0" aria-valuemax="100"><span id="learning-progress-fill"></span></div>
+          <div class="learning-summary"><span id="learning-model"></span><span id="learning-epoch"></span><span id="learning-elapsed"></span></div>
+          <div class="loss-grid">
+            <div class="loss-plot training-plot"><div class="loss-heading"><div><h2><span class="curve-key"></span>Training loss</h2><p>Waveform + spectral objective</p></div><strong id="train-loss-value">—</strong></div><div class="loss-graph"><svg id="train-loss-chart" role="img" tabindex="0" aria-label="Training loss: waiting for measurements"></svg><span id="train-loss-empty" class="loss-empty">Waiting for the first batch.</span><output id="train-loss-tooltip" class="loss-tooltip" hidden></output></div></div>
+            <div class="loss-plot validation-plot"><div class="loss-heading"><div><h2><span class="curve-key"></span>Validation error</h2><p>ESR · audio held out from training</p></div><strong id="validation-loss-value">—</strong></div><div class="loss-graph"><svg id="validation-loss-chart" role="img" tabindex="0" aria-label="Validation error: waiting for measurements"></svg><span id="validation-loss-empty" class="loss-empty">Measured after each epoch.</span><output id="validation-loss-tooltip" class="loss-tooltip" hidden></output></div></div>
+          </div>
+          <div class="learning-chart-footer"><span id="learning-best">Lower is better · separate scales</span><button id="loss-scale" aria-pressed="true">Log scale</button></div>
+          <p id="learning-note" class="learning-note">Training updates during each epoch. Validation updates after each epoch.</p>
+        </section>
         <div class="compare-switch" id="compare-switch" role="group" aria-label="Choose audio to compare" hidden><button data-source="dry">Dry</button><button data-source="reference" class="active">Reference</button><button data-source="model" disabled>Model</button></div>
         <div class="transport"><button id="primary-action" class="primary-action"><span class="transport-icon" id="transport-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span><span id="primary-label">Connect source</span></button></div>
         <div class="secondary-actions"><button id="secondary-action" class="quiet-button" hidden></button><a id="download-model" class="quiet-button" hidden download="tone-twin.nam">Download model <span aria-hidden="true">↗</span></a></div>

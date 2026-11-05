@@ -15,7 +15,7 @@
   };
   let config = { auth_required: false, authenticated: true, training_available: false };
   let state = { captures: [], jobs: [], bridge: { connected: false, recording: false, samples: 0, sample_rate: 48000 } };
-  let mode = 'record';
+  let mode = ['record', 'train', 'compare'].includes(safeSessionRead('tone-twin.mode')) ? safeSessionRead('tone-twin.mode') : 'record';
   let selectedId = safeSessionRead('tone-twin.take');
   let selectedJobId = null;
   let makingNewTake = !selectedId;
@@ -39,6 +39,9 @@
   let pendingPeaks = new Set();
   let audioContext = null;
   let previousJobStatuses = new Map();
+  let logarithmicLoss = true;
+  const trainingChart = new window.ToneTwinLossChart('train-loss', '#f56855');
+  const validationChart = new window.ToneTwinLossChart('validation-loss', '#dedbd1');
 
   function safeSessionRead(key) { try { return sessionStorage.getItem(key); } catch { return null; } }
   function safeSessionWrite(key, value) { try { value ? sessionStorage.setItem(key, value) : sessionStorage.removeItem(key); } catch { /* optional persistence */ } }
@@ -172,7 +175,12 @@
     const take = capture();
     const currentJob = job();
     const recording = state.bridge.recording;
+    safeSessionWrite('tone-twin.mode', mode);
     document.body.classList.toggle('recording', Boolean(recording));
+    const showLearning = mode === 'train' && Boolean(currentJob);
+    document.body.classList.toggle('training-view', showLearning);
+    $('learning-panel').hidden = !showLearning;
+    canvas.parentElement.hidden = showLearning;
     document.querySelectorAll('[data-mode]').forEach((button) => {
       const active = button.dataset.mode === mode;
       button.classList.toggle('active', active);
@@ -219,7 +227,7 @@
         $('stage-value').textContent = 'Ready.';
         $('stage-detail').textContent = 'Your model is ready to meet the original.';
         primary('Hear the difference', 'play');
-        secondary('Train a new version', () => { selectedJobId = '__new__'; renderNewTraining(); });
+        secondary('Train a new version', () => { selectedJobId = '__new__'; render(); });
       } else {
         renderNewTraining();
         if (currentJob?.status === 'failed' && $('inline-status').hidden) status(currentJob.error || 'Training could not finish. Try a fresh take or a new run.');
@@ -243,8 +251,27 @@
       $('stage-detail').textContent = 'The studio is offline. Reconnect to continue.';
       primary('Reconnect studio', 'connect');
     }
+    if (showLearning) renderLearning(currentJob);
     drawWaveform();
     if ($('takes-dialog').open) renderTakes();
+  }
+  function renderLearning(item) {
+    const running = ['queued', 'training'].includes(item.status);
+    const training = Array.isArray(item.training_metrics) ? item.training_metrics : [];
+    const validation = Array.isArray(item.metrics) ? item.metrics : [];
+    const oldRun = !item.metric_schema;
+    const stateLabel = offline ? 'Connection lost' : item.status === 'queued' ? 'Queued' : item.stage === 'preparing' ? 'Preparing' : item.stage === 'exporting' ? 'Exporting' : item.status === 'training' ? 'Live' : item.status === 'completed' ? 'Complete' : 'Stopped';
+    $('learning-state').textContent = stateLabel;
+    $('learning-state').classList.toggle('is-live', item.status === 'training' && !offline);
+    $('learning-progress-fill').style.width = `${progress(item)}%`;
+    $('learning-progress').setAttribute('aria-valuenow', String(progress(item)));
+    $('learning-model').textContent = `NAM · ${item.model_size === 'both' ? 'Lite + Full' : item.model_size === 'full' ? 'Full' : 'Lite'}`;
+    $('learning-epoch').textContent = `Epoch ${item.epoch || 0} / ${item.epochs}`;
+    $('learning-elapsed').textContent = Number.isFinite(item.elapsed_seconds) ? `${formatTime(item.elapsed_seconds)} training` : '';
+    trainingChart.update(training, item.epochs, logarithmicLoss, oldRun ? 'Training loss wasn’t logged for this older run.' : running ? 'Waiting for the first batch.' : 'No training measurements recorded.');
+    validationChart.update(validation, item.epochs, logarithmicLoss, running ? 'Measured after the first epoch.' : 'No validation measurements recorded.');
+    $('learning-best').textContent = Number.isFinite(item.best_loss) ? `Best validation ${window.ToneTwinLossChart.format(item.best_loss)} · epoch ${item.best_epoch}` : 'Lower is better · separate scales';
+    $('learning-note').textContent = oldRun ? 'Saved validation history. New runs also log training loss live.' : running ? 'Training updates about every 2 seconds; validation after each epoch. Lower is better · separate scales.' : 'Measured training batches and validation epochs. Lower is better · separate scales.';
   }
   function renderNewTraining() {
     const take = capture();
@@ -297,7 +324,7 @@
       }
       for (const item of state.jobs) {
         if (previousJobStatuses.has(item.id) && previousJobStatuses.get(item.id) !== item.status && item.capture_id === selectedId) {
-          if (item.status === 'completed' && mode === 'train') { mode = 'compare'; comparisonSource = 'reference'; loadedAudioKey = ''; status('Your model is ready. Listen to the original and the learned version.', 'success'); }
+          if (item.status === 'completed' && mode === 'train') { status('Training complete. Your best model is ready to compare.', 'success'); }
           if (item.status === 'failed') status(item.error || 'Training stopped. Try again.');
         }
       }
@@ -543,6 +570,12 @@
   }
 
   document.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
+  $('loss-scale').addEventListener('click', () => {
+    logarithmicLoss = !logarithmicLoss;
+    $('loss-scale').setAttribute('aria-pressed', String(logarithmicLoss));
+    $('loss-scale').textContent = logarithmicLoss ? 'Log scale' : 'Linear scale';
+    if (job()) renderLearning(job());
+  });
   document.querySelector('.wordmark').addEventListener('click', (event) => { event.preventDefault(); setMode('record'); });
   $('source-button').addEventListener('click', () => openDialog('settings-dialog'));
   $('settings-button').addEventListener('click', () => openDialog('settings-dialog'));
@@ -638,5 +671,9 @@
   resizeCanvas();
   render();
   initialize();
-  setInterval(() => { if (initialized && !document.hidden) updateState(); }, 2000);
+  async function poll() {
+    if (initialized && !document.hidden) await updateState();
+    setTimeout(poll, activeJob() ? 1000 : 3000);
+  }
+  setTimeout(poll, 1000);
 })();

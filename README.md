@@ -6,7 +6,7 @@ A small guitar tone learning studio: record paired dry/processed audio from a Qu
 
 [Open Tone Twin](https://drchrislevy--tone-twin-web.us-east.modal.run)
 
-The Blackroom UI has three views: Record, Train, and Compare. Source setup, file uploads, and training options are in Settings. Previous takes opens the recording library. Synthetic demo data is explicitly labelled.
+The Blackroom UI has three views: Record, Train, and Compare. Train shows live batch-loss and per-epoch validation curves, progress, and the best validation epoch. Charts have separate scales because training uses a waveform/spectral objective while validation uses ESR. Toggle logarithmic/linear axes, hover or use arrow keys to inspect measurements, and return to the saved curves after training. Older runs show the validation history they recorded; training values are never invented. Source setup, file uploads, and training options are in Settings. Previous takes opens the recording library. Synthetic demo data is explicitly labelled.
 
 From this project directory, connect your Quad Cortex Mini over USB and run:
 
@@ -39,6 +39,10 @@ For a hardware-free transport check, the explicit `--synthetic` flag generates a
 `modal_app.py` hosts the web app and a separate GPU training function, preferring L4 with A10G and T4 fallbacks. Recordings, training checkpoints and models live in the `tone-twin-data` Modal Volume. The single-user web service scales to zero when idle. A running training job has a one-hour timeout and training concurrency is limited to one.
 
 One web container owns the active audio connection and browser controls. This initial single-user design needs no sticky-session routing. The bridge sends ordered 48 kHz PCM pairs over WebSocket; sequence gaps stop a take and mark it interrupted. Recordings survive web-container restarts after saving. A container interruption during recording can lose the unsaved take.
+
+Training publishes actual batch measurements about every two seconds and after each validation epoch. The browser polls once per second during active jobs. Up to 2,000 training points are retained; longer histories thin older measured points without smoothing their values. Completed histories remain in the job status on the Volume.
+
+Deploy only when recording and training are idle. Open WebSockets can prevent a rolling deployment from replacing the sole web container. For an intentional restart use `uv run modal deploy --strategy recreate modal_app.py`, then reconnect the audio bridge. If the same version is already deployed, use `uv run modal app rollover tone-twin --strategy recreate`.
 
 For a new deployment, create an untracked `.env` with a random `TONE_TWIN_KEY`, then:
 

@@ -252,7 +252,8 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             raise ValueError("Model size must be lite, full, or both")
         capture = Path(root) / "captures" / _identifier(status["capture_id"])
         metadata = json.loads((capture / "meta.json").read_text())
-        update(status="training", stage="preparing", started_at=_now(), epoch=0, progress=0.01, metrics=[], error=None)
+        update(status="training", stage="preparing", started_at=_now(), epoch=0, progress=0.01,
+               metrics=[], training_metrics=[], metric_schema=2, error=None)
         dry, dry_rate = sf.read(capture / "dry.wav", dtype="float32")
         wet, wet_rate = sf.read(capture / "wet.wav", dtype="float32")
         if dry_rate != SAMPLE_RATE or wet_rate != SAMPLE_RATE:
@@ -316,14 +317,44 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         class Progress(pl.Callback):
             last_update = 0.0
 
+            def __init__(self):
+                self.started = time.monotonic()
+                self.points = []
+                self.epoch_loss_sum = 0.0
+                self.epoch_examples = 0
+
+            def on_train_epoch_start(self, trainer, module):
+                self.epoch_loss_sum = 0.0
+                self.epoch_examples = 0
+
+            def fields(self):
+                return {"training_metrics": list(self.points),
+                        "train_loss": self.points[-1]["loss"] if self.points else None,
+                        "elapsed_seconds": round(time.monotonic() - self.started, 2)}
+
             def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
                 loss = outputs.get("loss") if isinstance(outputs, dict) else outputs
-                if loss is not None and not bool(torch.isfinite(loss).all()):
+                if loss is None:
+                    raise RuntimeError("NAM did not report a training loss")
+                value = float(loss.detach().cpu()) / (2 if is_packed else 1)
+                if not math.isfinite(value):
                     raise RuntimeError("Training loss became non-finite")
-                if time.monotonic() - self.last_update < 10:
-                    return
                 fraction = (batch_idx + 1) / max(int(trainer.num_training_batches), 1)
-                update(epoch=int(trainer.current_epoch) + 1, progress=0.05 + 0.85 * (trainer.current_epoch + fraction) / epochs)
+                self.points.append({"step": int(trainer.global_step),
+                                    "epoch": round(trainer.current_epoch + fraction, 6),
+                                    "loss": value})
+                # Keep actual measured points, with a bounded history for long runs.
+                # Older points are thinned; values are never smoothed or invented.
+                if len(self.points) > 2000:
+                    self.points = self.points[::2]
+                examples = len(batch[0])
+                self.epoch_loss_sum += value * examples
+                self.epoch_examples += examples
+                if time.monotonic() - self.last_update < 2:
+                    return
+                update(epoch=int(trainer.current_epoch) + 1,
+                       progress=0.05 + 0.85 * (trainer.current_epoch + fraction) / epochs,
+                       **self.fields())
                 self.last_update = time.monotonic()
 
             def on_validation_end(self, trainer, module):
@@ -336,10 +367,12 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                 if not math.isfinite(loss):
                     raise RuntimeError("Validation loss became non-finite")
                 epoch = int(trainer.current_epoch) + 1
-                metrics = [*status["metrics"], {"epoch": epoch, "loss": loss}]
+                metrics = [*status["metrics"], {"epoch": epoch, "loss": loss,
+                           "train_loss": self.epoch_loss_sum / max(self.epoch_examples, 1)}]
                 if loss < status.get("best_loss", math.inf):
                     status.update(best_epoch=epoch, best_loss=loss)
-                update(epoch=epoch, loss=loss, metric_name="Validation ESR", metrics=metrics, progress=0.05 + 0.85 * epoch / epochs)
+                update(epoch=epoch, loss=loss, metric_name="Validation ESR", metrics=metrics,
+                       progress=0.05 + 0.85 * epoch / epochs, **self.fields())
                 self.last_update = time.monotonic()
 
         checkpoint = pl.callbacks.ModelCheckpoint(dirpath=directory / "checkpoints", filename="best", monitor="val_loss", mode="min", save_top_k=1)
