@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,9 +93,27 @@ class Store:
     def jobs(self) -> list[dict]:
         values = []
         for path in (self.root / "jobs").glob("*/status.json"):
-            job = json.loads(path.read_text())
-            for name, file in {"model": "model.nam", "prediction": "prediction.wav", "reference": "reference.wav", "dry": "dry.wav"}.items():
-                if (path.parent / file).is_file():
-                    job[f"{name}_url"] = f"/api/files/job/{job['id']}/{file}"
-            values.append(job)
+            values.append(self.present_job(json.loads(path.read_text())))
         return sorted(values, key=lambda x: x.get("created_at", ""), reverse=True)
+
+    @staticmethod
+    def present_job(job):
+        # Completion is published only after all four artifacts are persisted.
+        # Avoid four remote stat calls per historical job on every UI poll.
+        if job["status"] == "completed":
+            job = {**job, **{f"{name}_url": f"/api/files/job/{job['id']}/{file}" for name, file in
+                           {"model": "model.nam", "prediction": "prediction.wav", "reference": "reference.wav", "dry": "dry.wav"}.items()}}
+        return job
+
+    def job(self, job_id):
+        return self.present_job(json.loads((self.path("jobs", job_id) / "status.json").read_text()))
+
+    def snapshot(self):
+        captures = list((self.root / "captures").glob("*/meta.json"))
+        jobs = list((self.root / "jobs").glob("*/status.json"))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            metadata = list(pool.map(lambda path: json.loads(path.read_text()), [*captures, *jobs]))
+        return (
+            sorted((self.present_capture(m) for m in metadata[:len(captures)]), key=lambda m: m["created_at"], reverse=True),
+            sorted((self.present_job(m) for m in metadata[len(captures):]), key=lambda m: m.get("created_at", ""), reverse=True),
+        )

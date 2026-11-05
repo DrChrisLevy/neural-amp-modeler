@@ -51,7 +51,7 @@ def train(job_id: str | None = None):
 # A single web container keeps the one-user capture connection and controls together.
 # GPU jobs run in a separate function and don't interrupt the studio's audio ingestion.
 @app.function(image=web_image, volumes={"/data": data}, secrets=[auth], cpu=1, memory=2048, timeout=3600, max_containers=1, scaledown_window=120)
-@modal.concurrent(max_inputs=64)
+@modal.concurrent(max_inputs=64, target_inputs=16)
 @modal.asgi_app()
 def web():
     from tone_twin.server import create_app

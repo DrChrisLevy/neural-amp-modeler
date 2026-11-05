@@ -15,6 +15,7 @@
   };
   let config = { auth_required: false, authenticated: true, training_available: false };
   let state = { captures: [], jobs: [], bridge: { connected: false, recording: false, samples: 0, sample_rate: 48000 } };
+  let catalogRevision = null;
   let mode = ['record', 'train', 'compare'].includes(safeSessionRead('tone-twin.mode')) ? safeSessionRead('tone-twin.mode') : 'record';
   let selectedId = safeSessionRead('tone-twin.take');
   let selectedJobId = null;
@@ -312,10 +313,11 @@
     if (polling || !config.authenticated) return;
     polling = true;
     try {
-      const next = await api('/api/state');
+      const next = await api(`/api/state${catalogRevision ? `?revision=${encodeURIComponent(catalogRevision)}` : ''}`);
       const wasOffline = offline;
       const wasRecording = state.bridge.recording;
-      state = { captures: next.captures || [], jobs: next.jobs || [], bridge: next.bridge || state.bridge };
+      state = { captures: next.captures || state.captures, jobs: next.jobs || state.jobs, bridge: next.bridge || state.bridge };
+      catalogRevision = next.revision || null;
       offline = false;
       if (selectedId && !capture() && !wasRecording) { selectedId = null; makingNewTake = true; }
       if (wasRecording && !state.bridge.recording && state.captures.length) {
@@ -465,7 +467,9 @@
     pendingSeek = { position, playing, generation };
     audio.src = current.url;
     audio.load();
-    loadPeaks(current.url);
+    const knownPeaks = !current.job && current.take.peaks?.[comparisonSource === 'dry' ? 'dry' : 'wet'];
+    if (knownPeaks) decodedPeaks.set(current.url, knownPeaks);
+    else loadPeaks(current.url);
     render();
   }
   async function togglePlayback() {

@@ -12,6 +12,7 @@ import struct
 import tempfile
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,11 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Web
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
-from .storage import MAX_SECONDS, SAMPLE_RATE, Store, atomic_json, now
+from .artifacts import Artifacts, ArtifactResponse
+from .catalog import Catalog
+from .storage import MAX_SECONDS, SAMPLE_RATE, Store, atomic_json, identifier, now
 
 
 class Login(BaseModel):
@@ -39,8 +43,27 @@ class TrainCommand(BaseModel):
     model_size: str = "lite"
 
 
+class UICompression(GZipMiddleware):
+    async def __call__(self, scope, receive, send):
+        # Byte ranges must describe the original WAV, not a gzipped fragment.
+        if scope.get("path", "").startswith("/api/files/"):
+            await self.app(scope, receive, send)
+        else:
+            await super().__call__(scope, receive, send)
+
+
 def create_app(root: str | Path | None = None, *, key: str | None = None, volume=None, submit=None, warm=None) -> FastAPI:
-    studio = FastAPI(title="Tone Twin", docs_url=None, redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            await asyncio.gather(*list(finalizers), return_exceptions=True)
+            await catalog.close()
+            await artifacts.close()
+
+    studio = FastAPI(title="Tone Twin", docs_url=None, redoc_url=None, lifespan=lifespan)
+    studio.add_middleware(UICompression, minimum_size=1000, compresslevel=3)
     store = Store(root or os.environ.get("TONE_TWIN_DATA", ".data"))
     access_key = key if key is not None else os.environ.get("TONE_TWIN_KEY", "")
     storage_lock = asyncio.Lock()
@@ -48,6 +71,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     bridge_ws = None
     monitors: set[WebSocket] = set()
     recording = None
+    finalizers: set[asyncio.Task] = set()
     app_cookie = "tone_twin_key"
     launch_tickets: dict[str, float] = {}
     if os.environ.get("TONE_TWIN_MODAL") and not access_key:
@@ -79,6 +103,29 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         if volume is not None:
             await volume.commit.aio()
 
+    catalog = Catalog(store, storage_lock, reload_store)
+    artifacts = Artifacts()
+
+    def operation_finished(task):
+        finalizers.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logging.getLogger(__name__).error("Studio write failed", exc_info=task.exception())
+
+    async def persist(operation):
+        # Keep ownership and filesystem locks until a write has really finished,
+        # even if the initiating browser or audio connection disappears.
+        task = asyncio.create_task(operation)
+        finalizers.add(task)
+        task.add_done_callback(operation_finished)
+        return await asyncio.shield(task)
+
+    async def save_capture(*args, **kwargs):
+        async with storage_lock:
+            result = await asyncio.to_thread(store.capture, *args, **kwargs)
+            await commit_store()
+            catalog.put_capture(result)
+            return result
+
     @studio.middleware("http")
     async def auth_and_headers(request: Request, call_next):
         if request.url.path.startswith("/api/") and request.url.path not in {"/api/config", "/api/auth"}:
@@ -88,7 +135,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     @studio.exception_handler(ValueError)
@@ -130,10 +177,12 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         return response
 
     @studio.get("/api/state")
-    async def state():
-        async with storage_lock:
-            await reload_store()
-            return {"captures": store.captures(), "jobs": store.jobs(), "bridge": dict(bridge)}
+    async def state(revision: str | None = None):
+        await catalog.get()
+        result = {"revision": catalog.revision, "bridge": dict(bridge)}
+        if revision != catalog.revision:
+            result.update(captures=catalog.captures, jobs=catalog.jobs)
+        return JSONResponse(result)
 
     async def broadcast(payload):
         async def send(ws):
@@ -148,7 +197,10 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         if not authorized(ws.cookies.get(app_cookie)):
             await ws.close(code=1008)
             return
-        await ws.accept()
+        try:
+            await ws.accept()
+        except (WebSocketDisconnect, RuntimeError):
+            return
         monitors.add(ws)
         await ws.send_json({"type": "state", "bridge": bridge})
         try:
@@ -169,13 +221,17 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         if current.get("warm_task"):
             current["warm_task"].cancel()
         current["file"].close()
+
+        # Persist independently of the HTTP/WebSocket request. A disconnected
+        # client must not cancel the save once its audio has been recorded.
+        return await persist(save_recording(current, interrupted))
+
+    async def save_recording(current, interrupted):
         try:
-            audio, _ = sf.read(current["path"], dtype="float32", always_2d=True)
+            audio, _ = await asyncio.to_thread(sf.read, current["path"], dtype="float32", always_2d=True)
             if len(audio) < SAMPLE_RATE:
                 return None
-            async with storage_lock:
-                result = store.capture(audio[:, 0], audio[:, 1], current["name"], current["source"], "interrupted" if interrupted else "ready", current["id"])
-                await commit_store()
+            result = await save_capture(audio[:, 0], audio[:, 1], current["name"], current["source"], "interrupted" if interrupted else "ready", current["id"])
             await broadcast({"type": "state", "bridge": bridge})
             return result
         finally:
@@ -209,7 +265,10 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     @studio.websocket("/ws/bridge")
     async def capture_bridge(ws: WebSocket):
         nonlocal bridge_ws
-        await ws.accept()
+        try:
+            await ws.accept()
+        except (WebSocketDisconnect, RuntimeError):
+            return
         try:
             hello = await asyncio.wait_for(ws.receive_json(), 10)
         except Exception:
@@ -282,16 +341,13 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             if len(contents) > 128 * 1024 * 1024:
                 raise HTTPException(413, "Each WAV must be smaller than 128 MB.")
             try:
-                values, sr = sf.read(io.BytesIO(contents), dtype="float32")
+                values, sr = await asyncio.to_thread(sf.read, io.BytesIO(contents), dtype="float32")
             except Exception as exc:
                 raise HTTPException(400, "Upload readable WAV audio files.") from exc
             if sr != SAMPLE_RATE:
                 raise HTTPException(400, "Export both files at 48 kHz.")
             audio.append(values)
-        async with storage_lock:
-            result = store.capture(*audio, name=name, source="upload")
-            await commit_store()
-        return result
+        return await persist(save_capture(*audio, name=name, source="upload"))
 
     @studio.post("/api/demo")
     async def demo():
@@ -301,10 +357,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         envelope = np.exp(-3 * (t % 0.5))
         dry = (0.11 * np.sin(phase) + 0.04 * np.sin(2 * phase) + 0.02 * rng.normal(size=len(t))) * envelope
         wet = np.tanh(dry * 4) * 0.6
-        async with storage_lock:
-            result = store.capture(dry.astype("float32"), wet.astype("float32"), "Demo · synthetic plucks", "demo")
-            await commit_store()
-        return result
+        return await persist(save_capture(dry.astype("float32"), wet.astype("float32"), "Demo · synthetic plucks", "demo"))
 
     @studio.post("/api/train")
     async def train(body: TrainCommand):
@@ -312,43 +365,58 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             raise HTTPException(503, "Training is available in your deployed Modal workspace.")
         if body.model_size not in {"lite", "full", "both"}:
             raise HTTPException(400, "Choose lite, full, or both.")
+        identifier(body.capture_id)
+        return await persist(start_training(body))
+
+    async def start_training(body):
+        await catalog.get(fresh=True)
         async with storage_lock:
-            await reload_store()
-            path = store.path("captures", body.capture_id) / "meta.json"
-            if not path.is_file():
+            capture = next((c for c in catalog.captures if c["id"] == body.capture_id), None)
+            if capture is None:
                 raise HTTPException(404, "Take not found.")
-            capture = json.loads(path.read_text())
             if capture["status"] != "ready" or capture["duration"] < 12:
                 raise HTTPException(400, "Record at least 12 uninterrupted seconds. A few varied minutes work best.")
             if capture.get("clipped"):
                 raise HTTPException(400, "This take is clipping. Lower the input level and record again.")
-            if any(job["status"] in {"queued", "training"} for job in store.jobs()):
+            if any(job["status"] in {"queued", "training"} for job in catalog.jobs):
                 raise HTTPException(409, "A model is already training. Let it finish first.")
             job = {"id": uuid.uuid4().hex, "capture_id": body.capture_id, "name": capture["name"], "status": "queued", "progress": 0, "epoch": 0, "epochs": body.epochs, "model_size": body.model_size, "created_at": now(), "metrics": []}
             status_path = store.path("jobs", job["id"]) / "status.json"
-            atomic_json(status_path, job)
+            await asyncio.to_thread(atomic_json, status_path, job)
             await commit_store()
-            try:
-                await submit(job["id"])
-            except Exception as exc:
-                atomic_json(status_path, {**job, "status": "failed", "error": "Could not start the training worker. Try again."})
+            catalog.put_job(job)
+        try:
+            await submit(job["id"])
+        except Exception as exc:
+            async with storage_lock:
+                failed = {**job, "status": "failed", "error": "Could not start the training worker. Try again."}
+                await asyncio.to_thread(atomic_json, status_path, failed)
                 await commit_store()
-                raise HTTPException(503, "Could not start the training worker.") from exc
+                catalog.put_job(failed)
+            raise HTTPException(503, "Could not start the training worker.") from exc
         return job
 
     @studio.get("/api/files/{kind}/{record_id}/{filename}")
     async def audio_file(kind: str, record_id: str, filename: str):
         if kind not in {"capture", "job"} or filename not in {"dry.wav", "wet.wav", "prediction.wav", "reference.wav", "model.nam"}:
             raise HTTPException(404)
-        async with storage_lock:
-            await reload_store()
-            path = store.path("captures" if kind == "capture" else "jobs", record_id) / filename
-            if not path.is_file():
-                raise HTTPException(404)
-            # A detached local copy avoids open Volume files during future reloads.
-            payload = path.read_bytes()
-        from fastapi.responses import Response
-        return Response(payload, media_type="application/json" if filename.endswith(".nam") else "audio/wav", headers={"Content-Disposition": f'inline; filename="{filename}"'})
+        path = store.path("captures" if kind == "capture" else "jobs", record_id) / filename
+        key = f"{kind}-{record_id}-{filename}"
+
+        async def copy(destination):
+            async with storage_lock:
+                try:
+                    await asyncio.to_thread(artifacts.copy, path, destination)
+                except FileNotFoundError:
+                    # Only reload on a miss, rather than on every range request.
+                    await reload_store()
+                    try:
+                        await asyncio.to_thread(artifacts.copy, path, destination)
+                    except FileNotFoundError as exc:
+                        raise HTTPException(404) from exc
+
+        local = await artifacts.acquire(key, copy)
+        return ArtifactResponse(local, release=lambda: artifacts.release(key), media_type="application/json" if filename.endswith(".nam") else "audio/wav", filename=filename, content_disposition_type="inline", headers={"Cache-Control": "private, max-age=86400, immutable"})
 
     static = Path(__file__).parent / "static"
     static.mkdir(exist_ok=True)
@@ -362,6 +430,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
 
     studio.mount("/static", StaticFiles(directory=static), name="static")
     studio.state.store = store
+    studio.state.catalog = catalog
+    studio.state.artifacts = artifacts
     return studio
 
 
