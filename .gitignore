@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Private recordings, keys, and local tooling
+.data/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.DS_Store
+work/

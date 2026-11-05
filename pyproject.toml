@@ -1,0 +1,33 @@
+[project]
+name = "tone-twin"
+version = "0.1.0"
+description = "A minimal guitar tone learning studio, powered by Modal and Neural Amp Modeler."
+readme = "README.md"
+authors = [
+    { name = "DrChrisLevy", email = "christopherdavidlevy@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.162.0",
+    "httpx>=0.28.1",
+    "modal>=1.6.3",
+    "numpy>=2.5.4",
+    "python-multipart>=0.0.33",
+    "scipy>=1.18.1",
+    "sounddevice>=0.5.6",
+    "soundfile>=0.14.0",
+    "uvicorn[standard]>=0.54.0",
+    "websockets>=17.4",
+]
+
+[project.scripts]
+tone-twin = "tone_twin:main"
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
