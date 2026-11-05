@@ -26,7 +26,15 @@ training_image = (
 )
 
 
-@app.function(image=training_image, gpu=["L4", "A10G", "T4"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, max_containers=1)
+with training_image.imports():
+    # CPU-only imports are captured once so cold workers skip the ML import stack.
+    import torch
+    import pytorch_lightning
+    from nam.train.lightning_module import LightningModule
+    from tone_twin.training_runtime import ValidatedLightningModule
+
+
+@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, max_containers=1, enable_memory_snapshot=True)
 def train(job_id: str):
     from tone_twin.training import train_job
 

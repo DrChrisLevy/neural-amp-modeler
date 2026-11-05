@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import time
 from collections.abc import Callable
@@ -198,8 +199,8 @@ def _render(net, dry, start: int, stop: int):
     context = int(net.receptive_field) - 1
     outputs = []
     with torch.inference_mode():
-        for at in range(start, stop, 32_768):
-            end = min(at + 32_768, stop)
+        for at in range(start, stop, 131_072):
+            end = min(at + 131_072, stop)
             chunk = torch.from_numpy(np.ascontiguousarray(dry[at - context : end])).to(net.device)
             prediction = net(chunk, pad_start=False).detach().cpu().numpy()
             if prediction.shape[-1] != end - at or not np.isfinite(prediction).all():
@@ -231,14 +232,22 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
     and re-raised, so both the UI and Modal invocation reflect the failure.
     """
     directory = Path(root) / "jobs" / _identifier(job_id)
+    job_started = time.monotonic()
     status_path = directory / "status.json"
     status = json.loads(status_path.read_text())
+    publisher = None
+
+    def publish(snapshot):
+        _atomic_json(status_path, snapshot)
+        if commit:
+            commit()
 
     def update(**fields):
         status.update(fields, updated_at=_now())
-        _atomic_json(status_path, status)
-        if commit:
-            commit()
+        if publisher is None:
+            publish(status)
+        else:
+            publisher.submit(status)
 
     try:
         import numpy as np
@@ -280,19 +289,23 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         import pytorch_lightning as pl
         from torch.utils.data import DataLoader
         from nam.data import Dataset
-        from nam.train.lightning_module import LightningModule, PackedLightningModule, PackedMaskCallback
+        from nam.train.lightning_module import PackedMaskCallback
+        from .training_runtime import TrainingBatches, ValidationChunks, ValidatedLightningModule, ValidatedPackedLightningModule
 
         installed = importlib.metadata.version("neural-amp-modeler")
         if installed != NAM_VERSION:
             raise RuntimeError(f"Expected neural-amp-modeler {NAM_VERSION}, found {installed}")
         if not torch.cuda.is_available():
             raise RuntimeError("A CUDA GPU is required for this training job")
+        torch.cuda.reset_peak_memory_stats()
         pl.seed_everything(17, workers=True)
         torch.set_float32_matmul_precision("high")
         recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
         config = _select_model_config(recipe, size)
+        # Same Adam update, with the many small parameter operations fused on CUDA.
+        config["optimizer"]["fused"] = True
         is_packed = size == "both"
-        model_class = PackedLightningModule if is_packed else LightningModule
+        model_class = ValidatedPackedLightningModule if is_packed else ValidatedLightningModule
         model = model_class.init_from_config(config)
         model.net.sample_rate = SAMPLE_RATE
         receptive_field = int(model.net.receptive_field)
@@ -308,11 +321,20 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         for dataset in (training, validation):
             dataset.handshake(model.net)
             model.net.handshake(dataset)
-        train_loader = DataLoader(training, batch_size=16, shuffle=True, num_workers=0, pin_memory=True)
-        validation_loader = DataLoader(validation, batch_size=8, num_workers=0, pin_memory=True)
+        # At the ten-minute capture limit the mono pair occupies only ~230 MB.
+        # Keep it on the GPU and gather batches there instead of copying each one.
+        gpu_dry, gpu_wet = torch.from_numpy(dry).cuda(), torch.from_numpy(wet).cuda()
+        training_batches = TrainingBatches(gpu_dry[:train_stop], gpu_wet[:train_stop], receptive_field)
+        train_loader = DataLoader(training_batches, batch_size=None, num_workers=0)
+        validation_chunks = ValidationChunks(gpu_dry[train_stop:], gpu_wet[train_stop:], receptive_field)
+        validation_loader = DataLoader(validation_chunks, batch_size=None, num_workers=0)
         _atomic_json(directory / "model_config.json", config)
-        _atomic_json(directory / "training_config.json", {"nam_version": installed, "epochs": epochs, "split": split, "alignment": alignment, "sample_rate": SAMPLE_RATE, "capture": metadata})
-        update(stage="training", receptive_field_samples=receptive_field, validation_seconds=(len(dry) - split["validation_target_start"]) / SAMPLE_RATE, progress=0.05)
+        _atomic_json(directory / "training_config.json", {"nam_version": installed, "epochs": epochs, "split": split, "alignment": alignment, "sample_rate": SAMPLE_RATE, "capture": metadata,
+                    "validation_metric": "whole_recording_esr", "batch_size": 16, "fused_adam": True, "precision": "32-true", "audio_device": "cuda", "cuda_graphs": True,
+                    "gpu": torch.cuda.get_device_name(), "audio_bytes": dry.nbytes + wet.nbytes})
+        from .progress_writer import ProgressWriter
+        publisher = ProgressWriter(publish)
+        update(stage="training", validation_metric="whole_recording_esr", receptive_field_samples=receptive_field, validation_seconds=(len(dry) - split["validation_target_start"]) / SAMPLE_RATE, progress=0.05)
 
         class Progress(pl.Callback):
             last_update = 0.0
@@ -320,6 +342,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             def __init__(self):
                 self.started = time.monotonic()
                 self.points = []
+                self.pending = []
                 self.epoch_loss_sum = 0.0
                 self.epoch_examples = 0
 
@@ -332,26 +355,32 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                         "train_loss": self.points[-1]["loss"] if self.points else None,
                         "elapsed_seconds": round(time.monotonic() - self.started, 2)}
 
+            def flush(self):
+                if not self.pending:
+                    return
+                # One device synchronization per UI update, not one per batch.
+                values = torch.stack([item[2] for item in self.pending]).cpu().tolist()
+                for (step, epoch, _, examples), value in zip(self.pending, values):
+                    value /= 2 if is_packed else 1
+                    if not math.isfinite(value):
+                        raise RuntimeError("Training loss became non-finite")
+                    self.points.append({"step": step, "epoch": epoch, "loss": value})
+                    self.epoch_loss_sum += value * examples
+                    self.epoch_examples += examples
+                    if len(self.points) > 2000:
+                        self.points = self.points[::2]
+                self.pending.clear()
+
             def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
                 loss = outputs.get("loss") if isinstance(outputs, dict) else outputs
                 if loss is None:
                     raise RuntimeError("NAM did not report a training loss")
-                value = float(loss.detach().cpu()) / (2 if is_packed else 1)
-                if not math.isfinite(value):
-                    raise RuntimeError("Training loss became non-finite")
                 fraction = (batch_idx + 1) / max(int(trainer.num_training_batches), 1)
-                self.points.append({"step": int(trainer.global_step),
-                                    "epoch": round(trainer.current_epoch + fraction, 6),
-                                    "loss": value})
-                # Keep actual measured points, with a bounded history for long runs.
-                # Older points are thinned; values are never smoothed or invented.
-                if len(self.points) > 2000:
-                    self.points = self.points[::2]
-                examples = len(batch[0])
-                self.epoch_loss_sum += value * examples
-                self.epoch_examples += examples
+                # Graph replay reuses its output storage; snapshot each measured loss.
+                self.pending.append((int(trainer.global_step), round(trainer.current_epoch + fraction, 6), loss.detach().clone(), len(batch[0])))
                 if time.monotonic() - self.last_update < 2:
                     return
+                self.flush()
                 update(epoch=int(trainer.current_epoch) + 1,
                        progress=0.05 + 0.85 * (trainer.current_epoch + fraction) / epochs,
                        **self.fields())
@@ -360,6 +389,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             def on_validation_end(self, trainer, module):
                 if trainer.sanity_checking:
                     return
+                self.flush()
                 value = trainer.callback_metrics.get("val_loss")
                 if value is None:
                     raise RuntimeError("NAM did not report a validation loss")
@@ -375,7 +405,9 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                        progress=0.05 + 0.85 * epoch / epochs, **self.fields())
                 self.last_update = time.monotonic()
 
-        checkpoint = pl.callbacks.ModelCheckpoint(dirpath=directory / "checkpoints", filename="best", monitor="val_loss", mode="min", save_top_k=1)
+        # Keep per-epoch checkpoint I/O on local disk. Persist the winning file once.
+        checkpoint_temp = tempfile.TemporaryDirectory(prefix="tone-twin-checkpoints-")
+        checkpoint = pl.callbacks.ModelCheckpoint(dirpath=checkpoint_temp.name, filename="best", monitor="val_loss", mode="min", save_top_k=1)
         callbacks = [Progress(), checkpoint]
         if is_packed:
             callbacks.append(PackedMaskCallback())
@@ -385,11 +417,17 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             logger=False, enable_progress_bar=False, enable_model_summary=False,
             num_sanity_val_steps=0, gradient_clip_val=1.0,
         )
-        trainer.fit(model, train_loader, validation_loader)
-        if not checkpoint.best_model_path:
-            raise RuntimeError("Training finished without a validated checkpoint")
+        try:
+            trainer.fit(model, train_loader, validation_loader)
+            if not checkpoint.best_model_path:
+                raise RuntimeError("Training finished without a validated checkpoint")
+            saved_checkpoint = directory / "checkpoints" / "best.ckpt"
+            saved_checkpoint.parent.mkdir(exist_ok=True)
+            shutil.copyfile(checkpoint.best_model_path, saved_checkpoint)
+        finally:
+            checkpoint_temp.cleanup()
         update(stage="exporting", progress=0.92)
-        best = model_class.load_from_checkpoint(checkpoint.best_model_path, map_location="cpu", **model_class.parse_config(config))
+        best = model_class.load_from_checkpoint(saved_checkpoint, map_location="cpu", **model_class.parse_config(config))
         best.net.sample_rate = SAMPLE_RATE
         best.eval().cuda()
         start = split["validation_target_start"]
@@ -419,11 +457,21 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             progress=1.0, loss=esrs[selected], esr=esrs[selected], esr_by_model=esrs,
             comparison_model=selected, audition_gain=audition_gain,
             comparison_seconds=len(reference) / SAMPLE_RATE,
+            total_seconds=round(time.monotonic() - job_started, 2),
+            gpu=torch.cuda.get_device_name(), peak_gpu_memory_mb=round(torch.cuda.max_memory_allocated() / 1e6, 1),
             model_file="model.nam", prediction_file="prediction.wav",
             reference_file="reference.wav", dry_file="dry.wav", error=None,
         )
+        publisher.close()
+        publisher = None
         return status
     except Exception as exc:
+        if publisher is not None:
+            try:
+                publisher.close()
+            except Exception:
+                pass
+            publisher = None
         try:
             update(status="failed", stage="failed", failed_at=_now(), error=str(exc))
         except Exception:
