@@ -1,6 +1,8 @@
 """Exercise bridge packets against the real server without opening audio hardware."""
 
 import time
+import asyncio
+import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -16,8 +18,8 @@ from tone_twin.storage import SAMPLE_RATE
 
 
 @contextmanager
-def studio(tmp_path, submit=None):
-    app = create_app(tmp_path, key="test-stream-key", submit=submit)
+def studio(tmp_path, submit=None, warm=None):
+    app = create_app(tmp_path, key="test-stream-key", submit=submit, warm=warm)
     with TestClient(app) as client:
         client.headers["Authorization"] = "Bearer test-stream-key"
         yield app, client
@@ -204,3 +206,49 @@ def test_finalization_error_releases_single_bridge_slot(tmp_path):
         assert not state["bridge"]["recording"]
         with client.websocket_connect("/ws/bridge") as replacement:
             connect(replacement)
+
+
+@pytest.mark.parametrize("stop_mode", ["stop", "disconnect"])
+def test_worker_warmup_does_not_block_capture_and_is_cancelled_when_it_ends(tmp_path, stop_mode):
+    started, cancelled = threading.Event(), threading.Event()
+
+    async def warm():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with studio(tmp_path, warm=warm) as (app, client):
+        with client.websocket_connect("/ws/bridge") as ws:
+            connect(ws)
+            assert not started.is_set()  # Merely monitoring never warms a GPU.
+            start_record(client, ws)
+            assert started.wait(1)
+            send_samples(ws, 0, SAMPLE_RATE)
+            wait_state(client, lambda state: state["bridge"]["samples"] == SAMPLE_RATE)
+            if stop_mode == "stop":
+                assert client.post("/api/captures/record", json={"action": "stop"}).status_code == 200
+                assert ws.receive_json()["action"] == "stop"
+        assert cancelled.wait(1)
+        state = wait_state(client, lambda state: len(state["captures"]) == 1)
+        assert_saved_pair(app, state["captures"][0], 0, SAMPLE_RATE)
+
+
+def test_warmup_failure_does_not_fail_recording(tmp_path):
+    attempted = threading.Event()
+
+    async def warm():
+        attempted.set()
+        raise RuntimeError("GPU capacity temporarily unavailable")
+
+    with studio(tmp_path, warm=warm) as (app, client):
+        with client.websocket_connect("/ws/bridge") as ws:
+            connect(ws)
+            start_record(client, ws)
+            assert attempted.wait(1)
+            send_samples(ws, 0, SAMPLE_RATE)
+            wait_state(client, lambda state: state["bridge"]["samples"] == SAMPLE_RATE)
+            response = client.post("/api/captures/record", json={"action": "stop"})
+            assert response.status_code == 200
+            assert_saved_pair(app, response.json()["capture"], 0, SAMPLE_RATE)

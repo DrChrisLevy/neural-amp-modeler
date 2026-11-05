@@ -236,6 +236,10 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
     status_path = directory / "status.json"
     status = json.loads(status_path.read_text())
     publisher = None
+    timings = {}
+
+    def phase_done(name, started):
+        timings[name] = round(time.monotonic() - started, 4)
 
     def publish(snapshot):
         _atomic_json(status_path, snapshot)
@@ -263,8 +267,11 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         metadata = json.loads((capture / "meta.json").read_text())
         update(status="training", stage="preparing", started_at=_now(), epoch=0, progress=0.01,
                metrics=[], training_metrics=[], metric_schema=2, error=None)
+        phase_started = time.monotonic()
         dry, dry_rate = sf.read(capture / "dry.wav", dtype="float32")
         wet, wet_rate = sf.read(capture / "wet.wav", dtype="float32")
+        phase_done("read_audio", phase_started)
+        phase_started = time.monotonic()
         if dry_rate != SAMPLE_RATE or wet_rate != SAMPLE_RATE:
             raise ValueError("Training requires dry and wet recordings at 48 kHz")
         if len(dry) != len(wet):
@@ -276,14 +283,18 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             quality["warnings"].append("This is a short test capture; record a few minutes of varied playing for a useful model.")
         if min(quality["dry"]["rms_dbfs"], quality["wet"]["rms_dbfs"]) < -55:
             quality["warnings"].append("Capture level is low; more input level may improve the training signal.")
+        phase_done("audio_checks", phase_started)
+        phase_started = time.monotonic()
         # The held-out fifth is never used to calibrate alignment.
         calibration_stop = int(len(dry) * 0.8)
         alignment = estimate_delay(dry[:calibration_stop], wet[:calibration_stop])
         dry, wet = align_pair(dry, wet, alignment["applied_delay_samples"])
         dry, wet = np.ascontiguousarray(dry), np.ascontiguousarray(wet)
+        phase_done("alignment", phase_started)
         quality["warnings"].extend(alignment["warnings"])
         update(alignment=alignment, quality=quality, duration_seconds=len(dry) / SAMPLE_RATE, progress=0.03)
 
+        phase_started = time.monotonic()
         # All training imports remain inside this GPU-only entry point.
         import torch
         import pytorch_lightning as pl
@@ -334,7 +345,8 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                     "gpu": torch.cuda.get_device_name(), "audio_bytes": dry.nbytes + wet.nbytes})
         from .progress_writer import ProgressWriter
         publisher = ProgressWriter(publish)
-        update(stage="training", validation_metric="whole_recording_esr", receptive_field_samples=receptive_field, validation_seconds=(len(dry) - split["validation_target_start"]) / SAMPLE_RATE, progress=0.05)
+        phase_done("model_and_data_setup", phase_started)
+        update(stage="training", timings_seconds=timings.copy(), validation_metric="whole_recording_esr", receptive_field_samples=receptive_field, validation_seconds=(len(dry) - split["validation_target_start"]) / SAMPLE_RATE, progress=0.05)
 
         class Progress(pl.Callback):
             last_update = 0.0
@@ -418,7 +430,9 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             num_sanity_val_steps=0, gradient_clip_val=1.0,
         )
         try:
+            phase_started = time.monotonic()
             trainer.fit(model, train_loader, validation_loader)
+            phase_done("fit", phase_started)
             if not checkpoint.best_model_path:
                 raise RuntimeError("Training finished without a validated checkpoint")
             saved_checkpoint = directory / "checkpoints" / "best.ckpt"
@@ -427,6 +441,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         finally:
             checkpoint_temp.cleanup()
         update(stage="exporting", progress=0.92)
+        phase_started = time.monotonic()
         best = model_class.load_from_checkpoint(saved_checkpoint, map_location="cpu", **model_class.parse_config(config))
         best.net.sample_rate = SAMPLE_RATE
         best.eval().cuda()
@@ -452,12 +467,14 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             raise ValueError(f"Invalid model value: {value}")
         json.loads(model_path.read_text(), parse_constant=invalid_number)
         os.replace(model_path, directory / "model.nam")
+        phase_done("render_and_export", phase_started)
         update(
             status="completed", stage="completed", completed_at=_now(), epoch=epochs,
             progress=1.0, loss=esrs[selected], esr=esrs[selected], esr_by_model=esrs,
             comparison_model=selected, audition_gain=audition_gain,
             comparison_seconds=len(reference) / SAMPLE_RATE,
             total_seconds=round(time.monotonic() - job_started, 2),
+            timings_seconds=timings.copy(),
             gpu=torch.cuda.get_device_name(), peak_gpu_memory_mb=round(torch.cuda.max_memory_allocated() / 1e6, 1),
             model_file="model.nam", prediction_file="prediction.wav",
             reference_file="reference.wav", dry_file="dry.wav", error=None,

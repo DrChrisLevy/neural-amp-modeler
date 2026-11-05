@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import secrets
 import struct
@@ -38,7 +39,7 @@ class TrainCommand(BaseModel):
     model_size: str = "lite"
 
 
-def create_app(root: str | Path | None = None, *, key: str | None = None, volume=None, submit=None) -> FastAPI:
+def create_app(root: str | Path | None = None, *, key: str | None = None, volume=None, submit=None, warm=None) -> FastAPI:
     studio = FastAPI(title="Tone Twin", docs_url=None, redoc_url=None)
     store = Store(root or os.environ.get("TONE_TWIN_DATA", ".data"))
     access_key = key if key is not None else os.environ.get("TONE_TWIN_KEY", "")
@@ -51,6 +52,17 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     launch_tickets: dict[str, float] = {}
     if os.environ.get("TONE_TWIN_MODAL") and not access_key:
         raise RuntimeError("Hosted Tone Twin requires the tone-twin-auth Modal secret.")
+
+    async def keep_worker_ready(current):
+        # Warm only during a deliberate recording, with a wall-time bound even
+        # if a connected bridge stops delivering samples without disconnecting.
+        deadline = time.monotonic() + MAX_SECONDS
+        while recording is current and time.monotonic() < deadline:
+            try:
+                await asyncio.wait_for(warm(), timeout=60)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Training warm-up failed (%s); recording continues", type(exc).__name__)
+            await asyncio.sleep(min(40, max(0, deadline - time.monotonic())))
 
     def authorized(token: str | None) -> bool:
         return not access_key or (isinstance(token, str) and secrets.compare_digest(token, access_key))
@@ -154,6 +166,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         bridge["capture_id"] = None
         if current is None:
             return None
+        if current.get("warm_task"):
+            current["warm_task"].cancel()
         current["file"].close()
         try:
             audio, _ = sf.read(current["path"], dtype="float32", always_2d=True)
@@ -187,6 +201,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         recording = {"id": record_id, "name": body.name, "path": path, "source": bridge.get("source", "bridge"), "samples": 0, "file": sf.SoundFile(path, mode="w", samplerate=SAMPLE_RATE, channels=2, subtype="FLOAT")}
         bridge.update(recording=True, capture_id=record_id, samples=0)
         await bridge_ws.send_json({"type": "record", "action": "start"})
+        if warm is not None:
+            recording["warm_task"] = asyncio.create_task(keep_worker_ready(recording))
         await broadcast({"type": "state", "bridge": bridge})
         return {"id": record_id}
 

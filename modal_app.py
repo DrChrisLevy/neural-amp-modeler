@@ -34,10 +34,16 @@ with training_image.imports():
     from tone_twin.training_runtime import ValidatedLightningModule
 
 
-@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, max_containers=1, enable_memory_snapshot=True)
-def train(job_id: str):
+@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, min_containers=0, max_containers=1, scaledown_window=1200, enable_memory_snapshot=True)
+def train(job_id: str | None = None):
     from tone_twin.training import train_job
 
+    if job_id is None:
+        # Same Function means the eventual training request reuses this worker.
+        # Initialize CUDA now; no user audio or model weights are touched.
+        import torch
+        torch.zeros(1, device="cuda").sum().item()
+        return {"ready": True, "gpu": torch.cuda.get_device_name()}
     data.reload()
     return train_job("/data", job_id, commit=data.commit)
 
@@ -53,4 +59,7 @@ def web():
     async def submit(job_id):
         await train.spawn.aio(job_id)
 
-    return create_app("/data", volume=data, submit=submit)
+    async def warm():
+        return await train.remote.aio(None)
+
+    return create_app("/data", volume=data, submit=submit, warm=warm)
