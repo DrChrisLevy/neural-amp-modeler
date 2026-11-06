@@ -7,10 +7,12 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import struct
 import tempfile
 import time
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -50,6 +52,13 @@ class UICompression(GZipMiddleware):
             await self.app(scope, receive, send)
         else:
             await super().__call__(scope, receive, send)
+
+
+def download_filename(name: str, artifact: str) -> str:
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    stem = re.sub(r"[^a-z0-9]+", "_", name.lower().replace("'", "")).strip("_") or "capture"
+    suffix = "" if artifact == "model.nam" else f"_{Path(artifact).stem}"
+    return f"{stem}{suffix}{Path(artifact).suffix}"
 
 
 def create_app(root: str | Path | None = None, *, key: str | None = None, volume=None, submit=None, warm=None) -> FastAPI:
@@ -431,15 +440,17 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         return job
 
     @studio.get("/api/files/{kind}/{record_id}/{filename}")
-    async def audio_file(kind: str, record_id: str, filename: str):
+    async def audio_file(kind: str, record_id: str, filename: str, download: bool = False):
         if kind not in {"capture", "job"} or filename not in {"dry.wav", "wet.wav", "prediction.wav", "reference.wav", "model.nam"}:
             raise HTTPException(404)
         path = store.path("captures" if kind == "capture" else "jobs", record_id) / filename
         # Deleted records must not remain downloadable from the playback cache.
         await catalog.get()
         records = catalog.captures if kind == "capture" else catalog.jobs
-        if not any(item["id"] == record_id for item in records):
+        record = next((item for item in records if item["id"] == record_id), None)
+        if record is None:
             raise HTTPException(404)
+        capture = record if kind == "capture" else next((item for item in catalog.captures if item["id"] == record["capture_id"]), record)
         key = f"{kind}-{record_id}-{filename}"
 
         async def copy(destination):
@@ -455,7 +466,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
                         raise HTTPException(404) from exc
 
         local = await artifacts.acquire(key, copy)
-        return ArtifactResponse(local, release=lambda: artifacts.release(key), media_type="application/json" if filename.endswith(".nam") else "audio/wav", filename=filename, content_disposition_type="inline", headers={"Cache-Control": "private, max-age=86400, immutable"})
+        return ArtifactResponse(local, release=lambda: artifacts.release(key), media_type="application/json" if filename.endswith(".nam") else "audio/wav", filename=download_filename(capture.get("name", "capture"), filename), content_disposition_type="attachment" if download else "inline", headers={"Cache-Control": "private, max-age=86400, immutable"})
 
     static = Path(__file__).parent / "static"
     static.mkdir(exist_ok=True)

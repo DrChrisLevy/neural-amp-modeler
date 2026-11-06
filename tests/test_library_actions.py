@@ -19,6 +19,33 @@ def files():
     return {channel: (f'{channel}.wav', out.getvalue(), 'audio/wav') for channel in ('dry', 'wet')}
 
 
+@pytest.mark.parametrize(('name', 'stem'), [
+    ("Victor's Mega Squid", 'victors_mega_squid'),
+    ('Victor’s Mega Squid', 'victors_mega_squid'),
+    ('../Café / Clean!\r\n', 'cafe_clean'),
+    ('🎸', 'capture'),
+])
+def test_downloads_use_parent_pair_name_and_keep_audio_playable(tmp_path, name, stem):
+    app = create_app(tmp_path)
+    with TestClient(app) as c:
+        take = c.post('/api/captures/upload', files=files(), data={'name': name}).json()
+        c.post('/api/captures/upload', files=files(), data={'name': 'Another pair'})
+        job_id = 'f' * 32
+        job_path = app.state.store.path('jobs', job_id)
+        atomic_json(job_path / 'status.json', {'id': job_id, 'capture_id': take['id'], 'name': 'Old name', 'status': 'completed'})
+        (job_path / 'model.nam').write_text('{}')
+        model_url = c.get('/api/state').json()['jobs'][0]['model_url']
+        for url, suffix in [(model_url, '.nam'), (take['dry_url'], '_dry.wav'), (take['wet_url'], '_wet.wav')]:
+            response = c.get(url, params={'download': 1})
+            assert response.status_code == 200
+            assert response.headers['content-disposition'] == f'attachment; filename="{stem}{suffix}"'
+            assert response.content == c.get(url).content
+        playback = c.get(take['dry_url'], headers={'Range': 'bytes=0-43'})
+        assert playback.status_code == 206
+        assert playback.headers['content-disposition'] == f'inline; filename="{stem}_dry.wav"'
+        assert playback.content.startswith(b'RIFF')
+
+
 def test_delete_cascades_runs_and_revokes_cached_downloads(tmp_path):
     app = create_app(tmp_path, key='private')
     with TestClient(app) as c:

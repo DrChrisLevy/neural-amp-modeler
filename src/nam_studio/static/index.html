@@ -10,7 +10,7 @@
   <script src="/static/loss-chart.js?v=5" defer></script>
   <script src="/static/uploads.js?v=1" defer></script>
   <script src="/static/comparison-player.js?v=1" defer></script>
-  <script src="/static/app.js?v=13" defer></script>
+  <script src="/static/app.js?v=14" defer></script>
 </head>
 <body>
   <div class="studio">
@@ -28,7 +28,7 @@
         <button id="resume-recording" class="text-link resume-recording" hidden>Return to recording <span>↗</span></button>
       </section>
       <div id="detail-view" class="detail-view" hidden>
-      <div class="pair-navigation"><button id="back-library" class="text-link">← All pairs</button><div class="pair-actions"><button id="detail-compare" class="text-link">Compare audio</button><button id="detail-training" class="text-link">Training curves</button><a id="download-model" class="compact-button" hidden download="neural-amp-modeler.nam">Download .nam <span aria-hidden="true">↓</span></a><button id="detail-train" class="compact-button">New training run <span>+</span></button></div></div>
+      <div class="pair-navigation"><button id="back-library" class="text-link">← All pairs</button><div class="pair-actions"><button id="detail-compare" class="text-link">Compare audio</button><button id="detail-training" class="text-link">Training curves</button><a id="download-model" class="compact-button" hidden download>Download .nam <span aria-hidden="true">↓</span></a><button id="detail-train" class="compact-button">New training run <span>+</span></button></div></div>
       <section class="stage" aria-label="Recording studio">
         <div class="take-heading"><span class="recording-dot" id="recording-dot" hidden></span><input id="take-name" class="take-name" type="text" value="Untitled take" maxlength="100" aria-label="New take name" spellcheck="false"><h1 id="stage-title" hidden></h1></div>
         <div class="run-picker" id="run-picker" hidden><label for="training-run">Training run</label><select id="training-run" aria-label="Training run"></select></div>
