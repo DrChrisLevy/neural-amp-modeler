@@ -318,7 +318,8 @@
     document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
     render();
   }
-  function downloadUrl(url) { return `${url}${url.includes('?') ? '&' : '?'}download=1`; }
+  // Version the URL so cached responses cannot retain an older download filename.
+  function downloadUrl(url) { return `${url}${url.includes('?') ? '&' : '?'}download=1&v=2`; }
   function modelName(item) { return item.model_size === 'both' ? 'Full + Lite' : item.model_size === 'lite' ? 'Lite' : 'Full'; }
   function runLabel(item) { return item.status === 'training' ? `Training ${progress(item)}%` : item.status === 'completed' ? 'Complete' : item.status === 'failed' ? 'Failed' : 'Queued'; }
   function dateLabel(value, time = false) { return new Date(value).toLocaleString([], { month: 'short', day: 'numeric', ...(time ? { hour: '2-digit', minute: '2-digit' } : {}) }); }

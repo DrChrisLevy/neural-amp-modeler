@@ -54,10 +54,10 @@ class UICompression(GZipMiddleware):
             await super().__call__(scope, receive, send)
 
 
-def download_filename(name: str, artifact: str) -> str:
+def download_filename(name: str, artifact: str, epochs: int | None = None) -> str:
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     stem = re.sub(r"[^a-z0-9]+", "_", name.lower().replace("'", "")).strip("_") or "capture"
-    suffix = "" if artifact == "model.nam" else f"_{Path(artifact).stem}"
+    suffix = (f"_{epochs}_epochs" if epochs else "") if artifact == "model.nam" else f"_{Path(artifact).stem}"
     return f"{stem}{suffix}{Path(artifact).suffix}"
 
 
@@ -466,7 +466,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
                         raise HTTPException(404) from exc
 
         local = await artifacts.acquire(key, copy)
-        return ArtifactResponse(local, release=lambda: artifacts.release(key), media_type="application/json" if filename.endswith(".nam") else "audio/wav", filename=download_filename(capture.get("name", "capture"), filename), content_disposition_type="attachment" if download else "inline", headers={"Cache-Control": "private, max-age=86400, immutable"})
+        return ArtifactResponse(local, release=lambda: artifacts.release(key), media_type="application/json" if filename.endswith(".nam") else "audio/wav", filename=download_filename(capture.get("name", "capture"), filename, record.get("epochs")), content_disposition_type="attachment" if download else "inline", headers={"Cache-Control": "private, max-age=86400, immutable"})
 
     static = Path(__file__).parent / "static"
     static.mkdir(exist_ok=True)

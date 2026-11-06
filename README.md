@@ -93,7 +93,7 @@ Every new run trains **A2 Full**, with one Full model in the downloaded `.nam` f
 
 Every pair can have multiple runs, which can train concurrently, including different epoch settings for the same pair. Each run gets its own GPU container; the app sets no GPU-container cap, while Modal workspace quotas and capacity still apply. The collapsed row shows the active or latest run’s model and epochs. Expand a row’s training history to see every run’s settings and result, then open its curves and comparison audio. Completed runs have a **Download .nam** link directly in their library row and on the training-results page. More epochs don’t guarantee a better sound: export uses the best validation checkpoint.
 
-Downloads use the pair’s name: **Victor’s Mega Squid** saves as `victors_mega_squid.nam`, with `victors_mega_squid_dry.wav` and `victors_mega_squid_wet.wav` for the input and output audio.
+NAM downloads use the pair’s name and the run’s epoch count: a 400-epoch run for **Victor’s Mega Squid** saves as `victors_mega_squid_400_epochs.nam`. Input and output audio save as `victors_mega_squid_dry.wav` and `victors_mega_squid_wet.wav`.
 
 Existing Lite and Full + Lite runs remain available with their original labels, curves, and downloads. Older Full + Lite runs contain both sizes in one packed `.nam` file; their curves and best-checkpoint selection use the average across both models, and Compare plays Full. New Full runs report only the Full model’s loss and validation score.
 
