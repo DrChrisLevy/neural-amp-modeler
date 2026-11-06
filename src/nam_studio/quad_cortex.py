@@ -101,7 +101,7 @@ class Mini:
         processes = subprocess.check_output(["ps", "-axo", "comm="], text=True)
         if any(p.strip().endswith("/Cortex Control") for p in processes.splitlines()):
             raise RuntimeError("Quit Cortex Control, keeping the edited preset on the Mini, then retry.")
-        self.qc = Transport(session_id="tonetwincapture00000000000000000")
+        self.qc = Transport(session_id="namstudiocapture0000000000000000")
         set_report = self.qc.io.set_report
         self.qc.io.set_report = lambda *a, **kw: set_report(*a, **kw) & 0xffffffff
         try:

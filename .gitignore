@@ -15,5 +15,14 @@ wheels/
 .env.*
 !.env.example
 .pytest_cache/
+.ruff_cache/
 .DS_Store
 work/
+outputs/
+
+# Generated audio and model artifacts
+*.wav
+*.nam
+*.ckpt
+*.pt
+*.pth

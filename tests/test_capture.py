@@ -11,9 +11,10 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from tone_twin.capture import capture_pair, capture_lock, download_input, load_input
-from tone_twin.cli import parser
-from tone_twin.storage import SAMPLE_RATE
+from nam_studio.capture import aligned_output, capture_pair, capture_lock, download_input, load_input, repair_capture
+from nam_studio.cli import parser
+from nam_studio.storage import SAMPLE_RATE
+from nam_studio.training import ALIGNMENT_HEADROOM
 
 
 class Audio:
@@ -60,7 +61,7 @@ class Controller:
 
 def source(tmp_path):
     path = tmp_path / "source.wav"
-    sf.write(path, .1 * np.sin(np.arange(12 * SAMPLE_RATE) * .013), SAMPLE_RATE, subtype="PCM_24")
+    sf.write(path, np.random.default_rng(12).uniform(-.1, .1, 12 * SAMPLE_RATE), SAMPLE_RATE, subtype="PCM_24")
     return path
 
 
@@ -71,7 +72,7 @@ def test_pair_has_identical_length_original_level_and_edit_metadata(tmp_path):
     assert (folder / "input.wav").read_bytes() == path.read_bytes()
     dry, rate = sf.read(path)
     wet, wet_rate = sf.read(folder / "output.wav")
-    np.testing.assert_allclose(wet, dry * .25, atol=2**-23)
+    np.testing.assert_allclose(wet, np.r_[np.zeros(ALIGNMENT_HEADROOM), dry[:-ALIGNMENT_HEADROOM] * .25], atol=2**-23)
     assert rate == wet_rate == SAMPLE_RATE and len(dry) == len(wet)
     assert not sd.played[:SAMPLE_RATE].any() and not sd.played[-SAMPLE_RATE:].any()
     assert sd.stopped and controller.closed
@@ -81,6 +82,78 @@ def test_pair_has_identical_length_original_level_and_edit_metadata(tmp_path):
     assert meta["files"]["input.wav"] == hashlib.sha256(path.read_bytes()).hexdigest()
     again = capture_pair(path, "Crunch - dry", tmp_path / "pairs", controller=Controller(), sd=Audio(), emit=lambda _: None)
     assert again != folder
+
+
+@pytest.fixture
+def standard_pair(monkeypatch):
+    # Small deterministic stand-in for the checksum-identified v3 signal, with
+    # its actual pulse locations and repeated nine-second validation passages.
+    dry = np.zeros(190 * SAMPLE_RATE, dtype="float32")
+    excerpt = np.random.default_rng(4).uniform(-.2, .2, 9 * SAMPLE_RATE).astype("float32")
+    dry[:len(excerpt)] = dry[-len(excerpt):] = excerpt
+    dry[504_000:504_003] = dry[552_000:552_003] = [.001, .1, .01]
+    delay = 12_845
+    raw = np.zeros((len(dry) + 2 * SAMPLE_RATE, 2), dtype="float32")
+    raw[SAMPLE_RATE + delay:SAMPLE_RATE + delay + len(dry), 0] = dry * .5
+    raw[:, 1] = raw[:, 0] * .5
+    monkeypatch.setattr("nam_studio.capture.is_standard_input", lambda audio: True)
+    return dry, raw, delay
+
+
+def test_standard_export_recovers_real_tail_and_preserves_level(standard_pair):
+    dry, raw, delay = standard_pair
+    original = raw.copy()
+    wet, alignment, quality = aligned_output(dry, raw, 3)
+    np.testing.assert_array_equal(wet, np.r_[0, dry[:-1] * .5])
+    np.testing.assert_array_equal(raw, original)
+    assert alignment["estimated_delay_samples"] == delay
+    assert alignment["applied_delay_samples"] == delay - 1
+    assert alignment["retained_delay_samples"] == 1
+    assert quality["repeat_esr"] < .01
+    assert np.count_nonzero(wet[-delay:]) == delay
+
+
+def test_standard_export_rejects_missing_tail_and_bad_pulses(standard_pair):
+    dry, raw, delay = standard_pair
+    with pytest.raises(ValueError, match="insufficient.*tail"):
+        aligned_output(dry, raw[:len(dry) + SAMPLE_RATE], 3)
+    raw[SAMPLE_RATE + 552_000 + delay:SAMPLE_RATE + 552_000 + delay + 3] = 0
+    with pytest.raises(ValueError, match="both test pulses"):
+        aligned_output(dry, raw, 3)
+
+
+def test_repair_is_offline_preserves_originals_and_refuses_overwrite(tmp_path, standard_pair):
+    dry, raw, delay = standard_pair
+    original = tmp_path / "original"
+    original.mkdir()
+    for name, audio in (("input.wav", dry), ("raw.wav", raw), ("output.wav", raw[SAMPLE_RATE:SAMPLE_RATE + len(dry), 0])):
+        sf.write(original / name, audio, SAMPLE_RATE, subtype="PCM_24")
+    hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in original.iterdir()}
+    metadata = {"status": "ready", "wet_channel": 3, "preroll_seconds": 1, "files": hashes}
+    (original / "metadata.json").write_text(json.dumps(metadata))
+    target = tmp_path / "aligned"
+    with patch("nam_studio.capture.play_and_record", side_effect=AssertionError("No audio device access")):
+        repair_capture(original, target, emit=lambda _: None)
+    assert (target / "input.wav").read_bytes() == (original / "input.wav").read_bytes()
+    info = sf.info(target / "output.wav")
+    assert (info.frames, info.channels, info.samplerate, info.subtype) == (len(dry), 1, SAMPLE_RATE, "PCM_24")
+    repaired = json.loads((target / "metadata.json").read_text())
+    assert repaired["alignment"]["applied_delay_samples"] == delay - 1
+    for filename, checksum in hashes.items():
+        assert hashlib.sha256((original / filename).read_bytes()).hexdigest() == checksum
+    assert json.loads((original / "metadata.json").read_text()) == metadata
+    with pytest.raises(FileExistsError):
+        repair_capture(original, target, emit=lambda _: None)
+    with (original / "raw.wav").open("ab") as handle:
+        handle.write(b"changed")
+    with pytest.raises(ValueError, match="checksum"):
+        repair_capture(original, tmp_path / "invalid", emit=lambda _: None)
+    assert not (tmp_path / "invalid").exists()
+
+
+def test_repair_cli_requires_an_explicit_destination():
+    args = parser().parse_args(["repair-capture", "original", "--output", "aligned"])
+    assert args.source == "original" and args.output == "aligned"
 
 
 def test_audio_dropout_stops_and_restores_without_publishing_pair(tmp_path):
@@ -129,7 +202,7 @@ def protocol():
 
 @pytest.fixture
 def edited_mini(protocol):
-    from tone_twin.quad_cortex import Mini, fingerprint
+    from nam_studio.quad_cortex import Mini, fingerprint
     baseline = protocol.message_class("RecallPreset")().preset
     baseline.name = "Unsaved crunch"
     baseline.volume = -3.5
@@ -201,7 +274,7 @@ def test_never_rewires_another_selected_preset(edited_mini):
 
 
 def test_device_guard_blocks_save_recall_scene_and_other_edits(protocol):
-    from tone_twin.quad_cortex import Transport
+    from nam_studio.quad_cortex import Transport
     transport = object.__new__(Transport)
     for command in ("File", "RecallPreset", "Scene", "SetlistPosition", "UndoRedo"):
         m = protocol.message_class(command)(action=protocol.ACTION["UPDATE"])

@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from tone_twin.artifacts import Artifacts
-from tone_twin.server import create_app
-from tone_twin.storage import atomic_json
+from nam_studio.artifacts import Artifacts
+from nam_studio.server import create_app
+from nam_studio.storage import atomic_json
 
 
 @asynccontextmanager
@@ -186,27 +186,38 @@ def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatc
     asyncio.run(run())
 
 
-def test_training_dispatch_releases_lock_but_prevents_duplicate_jobs(tmp_path):
+def test_training_dispatch_allows_parallel_runs_without_blocking_controls(tmp_path):
     async def run():
-        started, release = asyncio.Event(), asyncio.Event()
+        started, both_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        submitted = []
 
         async def submit(job_id):
+            submitted.append(job_id)
             started.set()
+            if len(submitted) == 2:
+                both_started.set()
             await release.wait()
 
         async with studio(tmp_path, submit=submit) as (app, client):
             take = (await client.post("/api/demo")).json()
             await client.get("/api/state")
             first = asyncio.create_task(client.post("/api/train", json={"capture_id": take["id"]}))
+            second = None
             try:
                 await asyncio.wait_for(started.wait(), 1)
                 status = (await responsive(client, "/api/state")).json()
                 assert status["jobs"][0]["status"] == "queued"
-                second = await asyncio.wait_for(client.post("/api/train", json={"capture_id": take["id"]}), 1)
-                assert second.status_code == 409
+                second = asyncio.create_task(client.post("/api/train", json={"capture_id": take["id"], "model_size": "full", "epochs": 50}))
+                await asyncio.wait_for(both_started.wait(), 1)
+                status = (await responsive(client, "/api/state")).json()
+                assert len(status["jobs"]) == 2
+                assert {job["id"] for job in status["jobs"]} == set(submitted)
+                assert all(job["status"] == "queued" for job in status["jobs"])
+                await responsive(client)
             finally:
                 release.set()
             assert (await first).status_code == 200
+            assert (await second).status_code == 200
     asyncio.run(run())
 
 

@@ -1,4 +1,4 @@
-"""Native, sample-indexed audio capture for the Tone Twin web application."""
+"""Native, sample-indexed audio capture for the Neural Amp Modeler web application."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def resolve_token(value: str | None, environ: Mapping[str, str] | None = None) -
     """Read secrets without including their value in status messages."""
     env = os.environ if environ is None else environ
     if value is None:
-        return env.get("TONE_TWIN_KEY") or None
+        return env.get("NAM_STUDIO_KEY") or None
     if value.startswith("env:"):
         name = value[4:]
         if not name or not env.get(name):
@@ -101,7 +101,7 @@ def select_device(devices: Sequence[InputDevice], requested: str | int | None) -
         matches = [device for device in devices if "quad cortex" in device.name.casefold()]
         if not matches:
             raise BridgeError(
-                "No Quad Cortex input found. Connect it by USB, run 'tone-twin devices', "
+                "No Quad Cortex input found. Connect it by USB, run 'neural-amp-modeler devices', "
                 "then select an input explicitly with --device. No microphone was opened."
             )
     else:
@@ -113,10 +113,10 @@ def select_device(devices: Sequence[InputDevice], requested: str | int | None) -
             if not matches and query:
                 matches = [device for device in devices if query.casefold() in device.name.casefold()]
         if not matches:
-            raise BridgeError("That input device was not found. Run 'tone-twin devices' to list inputs.")
+            raise BridgeError("That input device was not found. Run 'neural-amp-modeler devices' to list inputs.")
     if len(matches) != 1:
         raise BridgeError(
-            "More than one matching input was found. Run 'tone-twin devices' "
+            "More than one matching input was found. Run 'neural-amp-modeler devices' "
             "and choose its numeric index with --device."
         )
     return matches[0]
@@ -255,11 +255,11 @@ async def _receive_status(websocket: object, emit: Callable[[str], None]) -> Non
             continue
         if message.get("type") == "record":
             if message.get("action") == "start":
-                emit("Recording started in Tone Twin.")
+                emit("Recording started in Neural Amp Modeler.")
             elif message.get("action") == "stop":
                 emit("Recording stopped. Live monitoring continues.")
         elif message.get("type") == "error":
-            raise BridgeError("The server reported an error and stopped the stream. Check the Tone Twin page.")
+            raise BridgeError("The server reported an error and stopped the stream. Check the Neural Amp Modeler page.")
     raise BridgeError("Server disconnected. Capture stopped; restart the bridge to reconnect.")
 
 

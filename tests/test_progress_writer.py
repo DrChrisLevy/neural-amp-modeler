@@ -1,7 +1,7 @@
 import threading
 import unittest
 
-from tone_twin.progress_writer import ProgressWriter
+from nam_studio.progress_writer import ProgressWriter
 
 
 class ProgressWriterTests(unittest.TestCase):

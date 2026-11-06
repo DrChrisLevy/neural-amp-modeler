@@ -1,4 +1,4 @@
-"""Tone Twin — capture, learn, compare."""
+"""Neural Amp Modeler — capture, learn, compare."""
 
 
 def main() -> None:

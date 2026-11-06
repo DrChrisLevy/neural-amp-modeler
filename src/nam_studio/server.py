@@ -39,7 +39,7 @@ class RecordCommand(BaseModel):
 
 class TrainCommand(BaseModel):
     capture_id: str
-    epochs: int = Field(default=100, ge=10, le=1000)
+    epochs: int = Field(default=400, ge=10, le=1000)
     model_size: str = "full"
 
 
@@ -62,20 +62,21 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             await catalog.close()
             await artifacts.close()
 
-    studio = FastAPI(title="Tone Twin", docs_url=None, redoc_url=None, lifespan=lifespan)
+    studio = FastAPI(title="Neural Amp Modeler", docs_url=None, redoc_url=None, lifespan=lifespan)
     studio.add_middleware(UICompression, minimum_size=1000, compresslevel=3)
-    store = Store(root or os.environ.get("TONE_TWIN_DATA", ".data"))
-    access_key = key if key is not None else os.environ.get("TONE_TWIN_KEY", "")
+    store = Store(root or os.environ.get("NAM_STUDIO_DATA", ".data"))
+    access_key = key if key is not None else os.environ.get("NAM_STUDIO_KEY", "")
     storage_lock = asyncio.Lock()
+    upload_slots = asyncio.Semaphore(2)
     bridge = {"connected": False, "device": None, "sample_rate": SAMPLE_RATE, "recording": False, "capture_id": None, "levels": {"dry": 0, "wet": 0}, "samples": 0}
     bridge_ws = None
     monitors: set[WebSocket] = set()
     recording = None
     finalizers: set[asyncio.Task] = set()
-    app_cookie = "tone_twin_key"
+    app_cookie = "nam_studio_key"
     launch_tickets: dict[str, float] = {}
-    if os.environ.get("TONE_TWIN_MODAL") and not access_key:
-        raise RuntimeError("Hosted Tone Twin requires the tone-twin-auth Modal secret.")
+    if os.environ.get("NAM_STUDIO_MODAL") and not access_key:
+        raise RuntimeError("Hosted Neural Amp Modeler requires the neural-amp-modeler-auth Modal secret.")
 
     async def keep_worker_ready(current):
         # Warm only during a deliberate recording, with a wall-time bound even
@@ -121,6 +122,13 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
 
     async def save_capture(*args, **kwargs):
         async with storage_lock:
+            if record_id := kwargs.get("record_id"):
+                # Retrying a completed upload after a lost response must not
+                # create a second pair or overwrite the original files.
+                existing = await asyncio.to_thread(store.find_capture, record_id)
+                if existing is not None:
+                    catalog.put_capture(existing)
+                    return existing
             result = await asyncio.to_thread(store.capture, *args, **kwargs)
             await commit_store()
             catalog.put_capture(result)
@@ -334,7 +342,15 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
                 await broadcast({"type": "state", "bridge": bridge})
 
     @studio.post("/api/captures/upload")
-    async def upload(dry: UploadFile = File(...), wet: UploadFile = File(...), name: str = Form("Untitled take")):
+    async def upload(dry: UploadFile = File(...), wet: UploadFile = File(...), name: str = Form("Untitled take"), upload_id: str | None = Form(None)):
+        if upload_id is not None:
+            identifier(upload_id)
+        # Transfers can arrive concurrently. Bound decoded audio in memory;
+        # other requests and live controls do not wait on these slots.
+        async with upload_slots:
+            return await decode_upload(dry, wet, name, upload_id)
+
+    async def decode_upload(dry, wet, name, upload_id):
         audio = []
         for file in (dry, wet):
             contents = await file.read(128 * 1024 * 1024 + 1)
@@ -347,7 +363,27 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             if sr != SAMPLE_RATE:
                 raise HTTPException(400, "Export both files at 48 kHz.")
             audio.append(values)
-        return await persist(save_capture(*audio, name=name, source="upload"))
+        return await persist(save_capture(*audio, name=name, source="upload", record_id=upload_id, filenames={"dry": dry.filename, "wet": wet.filename}))
+
+    @studio.delete("/api/captures/{capture_id}")
+    async def delete_capture(capture_id: str):
+        identifier(capture_id)
+        return await persist(remove_capture(capture_id))
+
+    async def remove_capture(capture_id):
+        await catalog.get(fresh=True)
+        async with storage_lock:
+            if bridge["recording"] and bridge["capture_id"] == capture_id:
+                raise HTTPException(409, "Stop recording before deleting this pair.")
+            if not any(c["id"] == capture_id for c in catalog.captures):
+                raise HTTPException(404, "Pair not found.")
+            jobs = [j for j in catalog.jobs if j["capture_id"] == capture_id]
+            if any(j["status"] in {"queued", "training"} for j in jobs):
+                raise HTTPException(409, "Wait for this pair’s training run to finish before deleting it.")
+            await asyncio.to_thread(store.delete_capture, capture_id, [j["id"] for j in jobs])
+            await commit_store()
+            catalog.remove_capture(capture_id)
+        return {"deleted": capture_id}
 
     @studio.post("/api/demo")
     async def demo():
@@ -363,8 +399,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     async def train(body: TrainCommand):
         if submit is None:
             raise HTTPException(503, "Training is available in your deployed Modal workspace.")
-        if body.model_size not in {"lite", "full", "both"}:
-            raise HTTPException(400, "Choose lite, full, or both.")
+        if body.model_size != "full":
+            raise HTTPException(400, "New training runs use A2 Full. Refresh the app to start a Full run.")
         identifier(body.capture_id)
         return await persist(start_training(body))
 
@@ -378,8 +414,6 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
                 raise HTTPException(400, "Record at least 12 uninterrupted seconds. A few varied minutes work best.")
             if capture.get("clipped"):
                 raise HTTPException(400, "This take is clipping. Lower the input level and record again.")
-            if any(job["status"] in {"queued", "training"} for job in catalog.jobs):
-                raise HTTPException(409, "A model is already training. Let it finish first.")
             job = {"id": uuid.uuid4().hex, "capture_id": body.capture_id, "name": capture["name"], "status": "queued", "progress": 0, "epoch": 0, "epochs": body.epochs, "model_size": body.model_size, "created_at": now(), "metrics": []}
             status_path = store.path("jobs", job["id"]) / "status.json"
             await asyncio.to_thread(atomic_json, status_path, job)
@@ -401,6 +435,11 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         if kind not in {"capture", "job"} or filename not in {"dry.wav", "wet.wav", "prediction.wav", "reference.wav", "model.nam"}:
             raise HTTPException(404)
         path = store.path("captures" if kind == "capture" else "jobs", record_id) / filename
+        # Deleted records must not remain downloadable from the playback cache.
+        await catalog.get()
+        records = catalog.captures if kind == "capture" else catalog.jobs
+        if not any(item["id"] == record_id for item in records):
+            raise HTTPException(404)
         key = f"{kind}-{record_id}-{filename}"
 
         async def copy(destination):
@@ -425,7 +464,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     async def index():
         path = static / "index.html"
         if not path.exists():
-            return JSONResponse({"name": "Tone Twin", "status": "Studio design in progress"})
+            return JSONResponse({"name": "Neural Amp Modeler", "status": "Studio design in progress"})
         return FileResponse(path)
 
     studio.mount("/static", StaticFiles(directory=static), name="static")

@@ -22,7 +22,7 @@ class ArtifactResponse(FileResponse):
 
 class Artifacts:
     def __init__(self, max_bytes=512 * 1024 * 1024):
-        self.directory = tempfile.TemporaryDirectory(prefix="tone-twin-playback-")
+        self.directory = tempfile.TemporaryDirectory(prefix="neural-amp-modeler-playback-")
         self.entries = OrderedDict()
         self.pending = {}
         self.waiters = {}

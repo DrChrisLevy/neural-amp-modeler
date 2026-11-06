@@ -4,17 +4,17 @@ from pathlib import Path
 
 import modal
 
-app = modal.App("tone-twin")
-data = modal.Volume.from_name("tone-twin-data", create_if_missing=True, version=2)
-auth = modal.Secret.from_name("tone-twin-auth")
-package = Path(__file__).parent / "src" / "tone_twin"
+app = modal.App("neural-amp-modeler")
+data = modal.Volume.from_name("neural-amp-modeler-data", create_if_missing=True, version=2)
+auth = modal.Secret.from_name("neural-amp-modeler-auth")
+package = Path(__file__).parent / "src" / "nam_studio"
 
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("libsndfile1")
     .pip_install("fastapi==0.162.0", "numpy==2.5.4", "soundfile==0.14.0", "python-multipart==0.0.33", "uvicorn==0.54.0")
-    .env({"TONE_TWIN_MODAL": "1", "TONE_TWIN_DATA": "/data"})
-    .add_local_dir(package, "/root/tone_twin", ignore=["__pycache__", "*.pyc"])
+    .env({"NAM_STUDIO_MODAL": "1", "NAM_STUDIO_DATA": "/data"})
+    .add_local_dir(package, "/root/nam_studio", ignore=["__pycache__", "*.pyc"])
 )
 training_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -22,7 +22,7 @@ training_image = (
     .pip_install("neural-amp-modeler==0.13.0", "pytorch-lightning<=2.6.1", "soundfile>=0.13,<1")
     .env({"MPLBACKEND": "Agg"})
     .run_commands("python -c 'import nam, tkinter, soundfile; from nam.train.lightning_module import LightningModule'")
-    .add_local_dir(package, "/root/tone_twin", ignore=["__pycache__", "*.pyc", "static"])
+    .add_local_dir(package, "/root/nam_studio", ignore=["__pycache__", "*.pyc", "static"])
 )
 
 
@@ -31,12 +31,12 @@ with training_image.imports():
     import torch
     import pytorch_lightning
     from nam.train.lightning_module import LightningModule
-    from tone_twin.training_runtime import ValidatedLightningModule
+    from nam_studio.training_runtime import ValidatedLightningModule
 
 
-@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, min_containers=0, max_containers=1, scaledown_window=1200, enable_memory_snapshot=True)
+@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, min_containers=0, scaledown_window=1200, enable_memory_snapshot=True)
 def train(job_id: str | None = None):
-    from tone_twin.training import train_job
+    from nam_studio.training import train_job
 
     if job_id is None:
         # Same Function means the eventual training request reuses this worker.
@@ -54,7 +54,7 @@ def train(job_id: str | None = None):
 @modal.concurrent(max_inputs=64, target_inputs=16)
 @modal.asgi_app()
 def web():
-    from tone_twin.server import create_app
+    from nam_studio.server import create_app
 
     async def submit(job_id):
         await train.spawn.aio(job_id)

@@ -10,9 +10,11 @@ import unittest
 import numpy as np
 import soundfile as sf
 
-from tone_twin.training import (
+from nam_studio.alignment import measure_v3_latency
+from nam_studio.training import (
     ALIGNMENT_HEADROOM,
     SAMPLE_RATE,
+    _LossHistory,
     _select_model_config,
     _write_audition,
     align_pair,
@@ -25,7 +27,55 @@ from tone_twin.training import (
 )
 
 
+class LossHistoryTests(unittest.TestCase):
+    def test_long_runs_retain_early_middle_and_latest_measurements(self):
+        history = _LossHistory()
+        for step in range(1, 63_001):
+            point = {"step": step, "epoch": step / 63, "loss": 1 / step}
+            history.append(point)
+            if step in (2001, 31_500, 63_000):
+                points = history.snapshot()
+                self.assertLessEqual(len(points), 2000)
+                self.assertEqual(points[0]["step"], 1)
+                self.assertEqual(points[-1], point)
+                self.assertTrue(all(a["step"] < b["step"] for a, b in zip(points, points[1:])))
+                self.assertLessEqual(max(b["step"] - a["step"] for a, b in zip(points, points[1:])), history.stride)
+                for p in points:
+                    self.assertEqual(p["loss"], 1 / p["step"])
+
+
 class AlignmentTests(unittest.TestCase):
+    @staticmethod
+    def pulse_audio(delays):
+        audio = np.zeros(13 * SAMPLE_RATE, dtype="float32")
+        for position, delay in zip((504_000, 552_000), delays):
+            if delay is not None:
+                audio[position + delay:position + delay + 3] = [.001, .1, .01]
+        return audio
+
+    def test_buffered_usb_pulses_use_onset_not_peak(self):
+        audio = self.pulse_audio((12_846, 12_846))
+        for polarity in (1, -1):
+            result = measure_v3_latency(audio * polarity)
+            self.assertEqual(result["pulse_delays_samples"], [12_846, 12_846])
+            self.assertEqual(result["applied_delay_samples"], 12_845)
+
+    def test_aligned_and_short_latency_pulses_keep_one_sample_margin(self):
+        for delay in (0, 1, 300, 9_999):
+            result = measure_v3_latency(self.pulse_audio((delay, delay)))
+            self.assertEqual(result["applied_delay_samples"], delay - 1)
+
+    def test_extended_calibration_rejects_missing_inconsistent_and_late_pulses(self):
+        for delays in ((12_846, None), (None, 12_846), (12_846, 12_866), (24_000, 24_000), (-1_000, -1_000)):
+            with self.subTest(delays=delays), self.assertRaises(ValueError):
+                measure_v3_latency(self.pulse_audio(delays))
+
+    def test_extended_calibration_respects_background_noise(self):
+        audio = self.pulse_audio((12_846, 12_846))
+        audio[492_000:498_000] = .2
+        with self.assertRaises(ValueError):
+            measure_v3_latency(audio)
+
     def test_delay_sign_and_nonlinear_polarity(self):
         rng = np.random.default_rng(12)
         x = rng.normal(0, 0.06, 3 * SAMPLE_RATE).astype(np.float32)
@@ -70,7 +120,7 @@ class QualityTests(unittest.TestCase):
         dry = np.zeros(190 * SAMPLE_RATE, dtype="float32")
         self.assertFalse(is_standard_input(dry))
         digest = hashlib.sha256(dry.astype("<f4").tobytes()).hexdigest()
-        with patch("tone_twin.training.NAM_V3_AUDIO_SHA256", digest):
+        with patch("nam_studio.training.NAM_V3_AUDIO_SHA256", digest):
             self.assertTrue(is_standard_input(dry))
             dry[1] = .1
             self.assertFalse(is_standard_input(dry))

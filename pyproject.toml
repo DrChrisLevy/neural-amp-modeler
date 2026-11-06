@@ -1,5 +1,5 @@
 [project]
-name = "tone-twin"
+name = "neural-amp-modeler-studio"
 version = "0.1.0"
 description = "A minimal guitar tone learning studio, powered by Modal and Neural Amp Modeler."
 readme = "README.md"
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tone-twin = "tone_twin:main"
+neural-amp-modeler = "nam_studio:main"
 
 [project.optional-dependencies]
 capture = [
@@ -39,3 +39,6 @@ dev = [
 
 [tool.uv.sources]
 qc-mcp = { git = "https://github.com/lexasoft123/qc-mcp", rev = "f634ecd3dcf426090b90bc4cc176e4b500494b9e" }
+
+[tool.uv.build-backend]
+module-name = "nam_studio"

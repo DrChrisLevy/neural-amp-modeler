@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -65,7 +66,7 @@ class Store:
             raise ValueError("Invalid resource type.")
         return self.root / kind / identifier(record_id)
 
-    def capture(self, dry, wet, name: str, source: str, status: str = "ready", record_id: str | None = None) -> dict:
+    def capture(self, dry, wet, name: str, source: str, status: str = "ready", record_id: str | None = None, filenames: dict | None = None) -> dict:
         validate_pair(dry, wet, SAMPLE_RATE)
         record_id = record_id or uuid.uuid4().hex
         folder = self.path("captures", record_id)
@@ -76,6 +77,8 @@ class Store:
             "id": record_id, "name": name.strip()[:100] or "Untitled take",
             "created_at": now(), "duration": len(dry) / SAMPLE_RATE,
             "sample_rate": SAMPLE_RATE, "source": source, "status": status,
+            "filenames": {channel: str((filenames or {}).get(channel) or f"{channel}.wav").replace("\\", "/").rsplit("/", 1)[-1][:200]
+                          for channel in ("dry", "wet")},
             "peaks": {"dry": waveform(dry), "wet": waveform(wet)},
             "clipped": bool(np.max(np.abs(dry)) >= 0.999 or np.max(np.abs(wet)) >= 0.999),
         }
@@ -89,6 +92,17 @@ class Store:
     def captures(self) -> list[dict]:
         values = [self.present_capture(json.loads(p.read_text())) for p in (self.root / "captures").glob("*/meta.json")]
         return sorted(values, key=lambda x: x["created_at"], reverse=True)
+
+    def find_capture(self, record_id: str) -> dict | None:
+        try:
+            return self.present_capture(json.loads((self.path("captures", record_id) / "meta.json").read_text()))
+        except FileNotFoundError:
+            return None
+
+    def delete_capture(self, record_id: str, job_ids: list[str]) -> None:
+        for job_id in job_ids:
+            shutil.rmtree(self.path("jobs", job_id))
+        shutil.rmtree(self.path("captures", record_id))
 
     def jobs(self) -> list[dict]:
         values = []

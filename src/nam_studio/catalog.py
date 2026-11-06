@@ -29,6 +29,11 @@ class Catalog:
         self.jobs = sorted([job, *(j for j in self.jobs if j["id"] != job["id"])], key=lambda j: j.get("created_at", ""), reverse=True)
         self.version += 1
 
+    def remove_capture(self, capture_id):
+        self.captures = [c for c in self.captures if c["id"] != capture_id]
+        self.jobs = [j for j in self.jobs if j["capture_id"] != capture_id]
+        self.version += 1
+
     async def get(self, *, fresh=False):
         active = any(j["status"] in {"queued", "training"} for j in self.jobs)
         interval = self.active_interval if active else self.idle_interval

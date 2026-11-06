@@ -1,7 +1,7 @@
 'use strict';
 
 // Small SVG plots: only measured points are drawn, with separate metric scales.
-window.ToneTwinLossChart = class {
+window.NAMLossChart = class {
   constructor(prefix, color) {
     this.svg = document.getElementById(`${prefix}-chart`);
     this.empty = document.getElementById(`${prefix}-empty`);
@@ -35,6 +35,21 @@ window.ToneTwinLossChart = class {
     if (!Number.isFinite(value)) return '—';
     if (value === 0) return '0';
     return Math.abs(value) < .001 || Math.abs(value) >= 1000 ? value.toExponential(2) : Number(value.toPrecision(4)).toString();
+  }
+
+  static trainingSeries(job) {
+    const valid = (value) => Number.isFinite(value) && value >= 0;
+    const points = (Array.isArray(job.metrics) ? job.metrics : [])
+      .filter((p) => Number.isFinite(p.epoch) && valid(p.train_loss))
+      .map((p) => ({epoch: p.epoch, loss: p.train_loss}));
+    const batches = Array.isArray(job.training_metrics) ? job.training_metrics : [];
+    const latest = batches.at(-1);
+    if (job.status === 'training' && valid(job.train_epoch_loss)
+        && Number.isFinite(latest?.epoch) && latest.epoch > (points.at(-1)?.epoch ?? 0)) {
+      points.push({epoch: latest.epoch, loss: job.train_epoch_loss, partial: true});
+    }
+    // Saved epoch means repair older runs whose batch history was over-thinned.
+    return points.length ? {points, averaged: true} : {points: batches, averaged: false};
   }
 
   update(points, epochs, logarithmic, emptyMessage) {
@@ -104,7 +119,7 @@ window.ToneTwinLossChart = class {
     const line = group.querySelector('line'), dot = group.querySelector('circle');
     for (const [key, value] of Object.entries({x1: x, x2: x, y1: 12, y2: this.svg.clientHeight - 29})) line.setAttribute(key, value);
     dot.setAttribute('cx', x); dot.setAttribute('cy', y);
-    this.tooltip.textContent = `Epoch ${Number(point.epoch.toFixed(2))} · ${this.constructor.format(point.loss)}${point.step ? ` · step ${point.step}` : ''}`;
+    this.tooltip.textContent = `Epoch ${Number(point.epoch.toFixed(2))}${point.partial ? ' so far' : ''} · ${this.constructor.format(point.loss)}${point.step ? ` · step ${point.step}` : ''}`;
     this.tooltip.hidden = false;
     this.tooltip.style.left = `${Math.max(4, Math.min(this.svg.clientWidth - this.tooltip.offsetWidth - 4, x - this.tooltip.offsetWidth / 2))}px`;
     this.tooltip.style.top = `${Math.max(0, y - 34)}px`;

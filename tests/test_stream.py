@@ -12,9 +12,9 @@ import soundfile as sf
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from tone_twin.bridge import BLOCK_SIZE, pack_frames, synthetic_frames
-from tone_twin.server import create_app
-from tone_twin.storage import SAMPLE_RATE
+from nam_studio.bridge import BLOCK_SIZE, pack_frames, synthetic_frames
+from nam_studio.server import create_app
+from nam_studio.storage import SAMPLE_RATE
 
 
 @contextmanager
@@ -140,7 +140,7 @@ def test_interrupted_takes_are_saved_but_cannot_train(tmp_path, fault):
 
 
 def test_duration_limit_trims_only_the_final_frame_and_keeps_bridge_connected(tmp_path):
-    with patch("tone_twin.server.MAX_SECONDS", 1):
+    with patch("nam_studio.server.MAX_SECONDS", 1):
         with studio(tmp_path) as (app, client):
             with client.websocket_connect("/ws/bridge") as ws:
                 connect(ws)

@@ -1022,6 +1022,52 @@ wheels = [
 ]
 
 [[package]]
+name = "neural-amp-modeler-studio"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "modal" },
+    { name = "numpy" },
+    { name = "python-multipart" },
+    { name = "scipy" },
+    { name = "sounddevice" },
+    { name = "soundfile" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+capture = [
+    { name = "qc-mcp" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.162.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "modal", specifier = ">=1.6.3" },
+    { name = "numpy", specifier = ">=2.5.4" },
+    { name = "python-multipart", specifier = ">=0.0.33" },
+    { name = "qc-mcp", marker = "extra == 'capture'", git = "https://github.com/lexasoft123/qc-mcp?rev=f634ecd3dcf426090b90bc4cc176e4b500494b9e" },
+    { name = "scipy", specifier = ">=1.18.1" },
+    { name = "sounddevice", specifier = ">=0.5.6" },
+    { name = "soundfile", specifier = ">=0.14.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
+    { name = "websockets", specifier = ">=17.4" },
+]
+provides-extras = ["capture"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.2.0" }]
+
+[[package]]
 name = "numpy"
 version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1803,52 +1849,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
 ]
-
-[[package]]
-name = "tone-twin"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "modal" },
-    { name = "numpy" },
-    { name = "python-multipart" },
-    { name = "scipy" },
-    { name = "sounddevice" },
-    { name = "soundfile" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-capture = [
-    { name = "qc-mcp" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.162.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "modal", specifier = ">=1.6.3" },
-    { name = "numpy", specifier = ">=2.5.4" },
-    { name = "python-multipart", specifier = ">=0.0.33" },
-    { name = "qc-mcp", marker = "extra == 'capture'", git = "https://github.com/lexasoft123/qc-mcp?rev=f634ecd3dcf426090b90bc4cc176e4b500494b9e" },
-    { name = "scipy", specifier = ">=1.18.1" },
-    { name = "sounddevice", specifier = ">=0.5.6" },
-    { name = "soundfile", specifier = ">=0.14.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
-    { name = "websockets", specifier = ">=17.4" },
-]
-provides-extras = ["capture"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.2.0" }]
 
 [[package]]
 name = "truststore"

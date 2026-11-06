@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from websockets.asyncio.server import serve
 
-from tone_twin.bridge import (
+from nam_studio.bridge import (
     BLOCK_SIZE,
     FRAME_HEADER,
     BridgeError,
@@ -56,7 +56,7 @@ def test_channels_and_environment_token_validation():
     for dry, wet in [(0, 3), (1, 1), (1, 9)]:
         with pytest.raises(BridgeError):
             validate_channels(cortex, dry, wet)
-    assert resolve_token(None, {"TONE_TWIN_KEY": "example-key"}) == "example-key"
+    assert resolve_token(None, {"NAM_STUDIO_KEY": "example-key"}) == "example-key"
     assert resolve_token("env:CUSTOM_KEY", {"CUSTOM_KEY": "another-key"}) == "another-key"
     assert resolve_token(None, {}) is None
     with pytest.raises(BridgeError):
@@ -127,7 +127,7 @@ def test_stalled_audio_device_reports_incomplete_recording():
             self.messages.append(json.loads(value))
 
     socket = Socket()
-    with patch("tone_twin.bridge.CAPTURE_STALL_TIMEOUT", 0.01):
+    with patch("nam_studio.bridge.CAPTURE_STALL_TIMEOUT", 0.01):
         with pytest.raises(BridgeError, match="stopped delivering"):
             asyncio.run(_send_capture(socket, CaptureBuffer(1, 2)))
     assert socket.messages[0]["type"] == "gap"
@@ -152,7 +152,7 @@ def test_synthetic_websocket_handshake_framing_and_record_status():
 
         async with serve(handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            with patch("tone_twin.bridge.input_devices", side_effect=AssertionError("Hardware must not be touched")):
+            with patch("nam_studio.bridge.input_devices", side_effect=AssertionError("Hardware must not be touched")):
                 with pytest.raises(BridgeError, match="disconnected"):
                     await asyncio.wait_for(run_bridge(
                         f"http://127.0.0.1:{port}", synthetic=True, token="integration-key", emit=statuses.append,

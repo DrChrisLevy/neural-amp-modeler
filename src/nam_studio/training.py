@@ -30,6 +30,31 @@ ALIGNMENT_HEADROOM = 16
 NAM_V3_AUDIO_SHA256 = "c3c2b88c8fdead4f958ab146de34bd4f85c4ba5808c7b933c55e85044a1910f2"
 
 
+class _LossHistory:
+    """Bound batch history with a uniform stride across the entire run."""
+
+    def __init__(self, limit=2000):
+        self.limit = limit
+        self.stride = 1
+        self.points = []
+        self.latest = None
+
+    def append(self, point):
+        self.latest = point
+        if not self.points or point["step"] % self.stride == 0:
+            self.points.append(point)
+        if len(self.points) >= self.limit:
+            self.stride *= 2
+            first = self.points[0]
+            self.points = [p for p in self.points if p is first or p["step"] % self.stride == 0]
+
+    def snapshot(self):
+        points = list(self.points)
+        if self.latest is not None and (not points or points[-1] is not self.latest):
+            points.append(self.latest)
+        return points
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -167,6 +192,43 @@ def is_standard_input(dry) -> bool:
 
     return (len(dry) == 190 * SAMPLE_RATE
             and hashlib.sha256(np.asarray(dry, dtype="<f4").tobytes()).hexdigest() == NAM_V3_AUDIO_SHA256)
+
+
+def calibrate_standard_delay(wet) -> dict[str, Any]:
+    """Keep NAM's calibration, recentering long USB delays only when necessary."""
+    from nam.train.core import _calibrate_latency_v3
+    from .alignment import measure_v3_latency
+
+    options = dict(manual_available=False, show_plots=False, _override_suppress_plots=True)
+    calibration = _calibrate_latency_v3(wet, **options)
+    coarse_offset = 0
+    pulse_delays = None
+    if calibration.recommended is None:
+        pulse_delays = measure_v3_latency(wet)["pulse_delays_samples"]
+        # Leave 1,000 samples for upstream's final onset measurement and its
+        # causal safety factor. This view does not modify the saved recording.
+        coarse_offset = max(0, min(pulse_delays) - 1000)
+        calibration = _calibrate_latency_v3(wet[coarse_offset:], **options)
+        if calibration.recommended is None:
+            raise ValueError("NAM could not calibrate the test pulses. Check the USB routing and levels.")
+    applied = int(calibration.recommended) + coarse_offset
+    estimated = applied + calibration.safety_factor
+    if pulse_delays is not None and any(abs(estimated - delay) >= 20 for delay in pulse_delays):
+        raise ValueError("NAM's test pulses do not have a consistent delay. Check noise, gates, and time effects.")
+    details = calibration.model_dump(mode="json")
+    details["recommended"] = applied
+    details["delays"] = [int(delay) + coarse_offset for delay in calibration.delays]
+    return {
+        "method": "nam_v3_blips",
+        "applied_delay_samples": applied,
+        "estimated_delay_samples": estimated,
+        "estimated_delay_ms": estimated * 1000 / SAMPLE_RATE,
+        "retained_delay_samples": calibration.safety_factor,
+        "coarse_offset_samples": coarse_offset,
+        "pulse_delays_samples": pulse_delays,
+        "calibration": details,
+        "warnings": [],
+    }
 
 
 def check_repeated_output(wet) -> float:
@@ -313,15 +375,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         phase_done("audio_checks", phase_started)
         phase_started = time.monotonic()
         if standard:
-            from nam.train.core import _calibrate_latency_v3
-            calibration = _calibrate_latency_v3(wet, manual_available=False, show_plots=False, _override_suppress_plots=True)
-            if calibration.recommended is None:
-                raise ValueError("NAM could not calibrate the test pulses. Check the USB routing and levels.")
-            applied = int(calibration.recommended)
-            alignment = {"method": "nam_v3_blips", "applied_delay_samples": applied,
-                         "estimated_delay_samples": applied + calibration.safety_factor,
-                         "retained_delay_samples": calibration.safety_factor,
-                         "calibration": calibration.model_dump(mode="json"), "warnings": []}
+            alignment = calibrate_standard_delay(wet)
         else:
             # Arbitrary paired takes use correlation on training audio only.
             calibration_stop = int(len(dry) * 0.8)
@@ -387,7 +441,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
 
             def __init__(self):
                 self.started = time.monotonic()
-                self.points = []
+                self.history = _LossHistory()
                 self.pending = []
                 self.epoch_loss_sum = 0.0
                 self.epoch_examples = 0
@@ -397,8 +451,9 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                 self.epoch_examples = 0
 
             def fields(self):
-                return {"training_metrics": list(self.points),
-                        "train_loss": self.points[-1]["loss"] if self.points else None,
+                return {"training_metrics": self.history.snapshot(),
+                        "train_loss": self.history.latest["loss"] if self.history.latest else None,
+                        "train_epoch_loss": self.epoch_loss_sum / self.epoch_examples if self.epoch_examples else None,
                         "elapsed_seconds": round(time.monotonic() - self.started, 2)}
 
             def flush(self):
@@ -410,11 +465,9 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                     value /= 2 if is_packed else 1
                     if not math.isfinite(value):
                         raise RuntimeError("Training loss became non-finite")
-                    self.points.append({"step": step, "epoch": epoch, "loss": value})
+                    self.history.append({"step": step, "epoch": epoch, "loss": value})
                     self.epoch_loss_sum += value * examples
                     self.epoch_examples += examples
-                    if len(self.points) > 2000:
-                        self.points = self.points[::2]
                 self.pending.clear()
 
             def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
@@ -452,7 +505,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                 self.last_update = time.monotonic()
 
         # Keep per-epoch checkpoint I/O on local disk. Persist the winning file once.
-        checkpoint_temp = tempfile.TemporaryDirectory(prefix="tone-twin-checkpoints-")
+        checkpoint_temp = tempfile.TemporaryDirectory(prefix="neural-amp-modeler-checkpoints-")
         checkpoint = pl.callbacks.ModelCheckpoint(dirpath=checkpoint_temp.name, filename="best", monitor="val_loss", mode="min", save_top_k=1)
         callbacks = [Progress(), checkpoint]
         if is_packed:
@@ -499,7 +552,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         selected = "full" if is_packed else size
         audition_gain = _write_audition(directory, validation_dry[start:], reference, predictions, selected)
         with torch.inference_mode():
-            best.net.export(directory, basename="model_pending", other_metadata={"name": f"Tone Twin {job_id}", "capture_id": status["capture_id"]})
+            best.net.export(directory, basename="model_pending", other_metadata={"name": f"Neural Amp Modeler {job_id}", "capture_id": status["capture_id"]})
         # Invalid model numbers must never become a downloadable successful run.
         model_path = directory / "model_pending.nam"
         def invalid_number(value):

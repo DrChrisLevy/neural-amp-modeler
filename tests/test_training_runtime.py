@@ -6,8 +6,8 @@ import json
 
 try:
     import torch
-    from tone_twin.training_runtime import TrainingBatches, ValidationChunks, _WholeRecordingValidation, ValidatedLightningModule, prepare_datasets
-    from tone_twin.training import _select_model_config, split_segments
+    from nam_studio.training_runtime import TrainingBatches, ValidationChunks, _WholeRecordingValidation, ValidatedLightningModule, prepare_datasets
+    from nam_studio.training import _select_model_config, split_segments, calibrate_standard_delay
     from nam.data import Dataset
 except ModuleNotFoundError as exc:
     if exc.name not in {"torch", "nam"}:
@@ -28,6 +28,32 @@ class ValidationHarness(_WholeRecordingValidation, torch.nn.Module):
 
     def log(self, name, value, **kwargs):
         self.metrics[name] = value.item()
+
+
+class PulseCalibrationTests(unittest.TestCase):
+    def test_upstream_calibration_handles_small_and_buffered_delays(self):
+        import numpy as np
+        for delay in (0, 237, 9999, 10_000, 12_846, 23_900):
+            with self.subTest(delay=delay):
+                wet = np.zeros(13 * 48_000, dtype="float32")
+                for position in (504_000, 552_000):
+                    wet[position + delay:position + delay + 3] = [.001, .1, .01]
+                original = wet.copy()
+                result = calibrate_standard_delay(wet)
+                self.assertEqual(result["estimated_delay_samples"], delay)
+                self.assertEqual(result["applied_delay_samples"], delay - 1)
+                self.assertEqual(result["calibration"]["recommended"], delay - 1)
+                self.assertEqual(result["calibration"]["delays"], [delay])
+                self.assertEqual(result["coarse_offset_samples"] > 0, delay >= 10_000)
+                np.testing.assert_array_equal(wet, original)
+
+    def test_cancelling_pulses_cannot_bypass_upstream_calibration(self):
+        import numpy as np
+        wet = np.zeros(13 * 48_000, dtype="float32")
+        wet[504_000 + 12_846] = .1
+        wet[552_000 + 12_846] = -.1
+        with self.assertRaisesRegex(ValueError, "calibrate"):
+            calibrate_standard_delay(wet)
 
 
 class ValidationRegressionTests(unittest.TestCase):

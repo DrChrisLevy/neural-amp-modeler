@@ -10,7 +10,7 @@ from .bridge import BridgeError, input_devices, resolve_token, run_bridge
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="tone-twin", description="Capture paired guitar audio for Tone Twin.")
+    result = argparse.ArgumentParser(prog="neural-amp-modeler", description="Capture paired guitar audio for Neural Amp Modeler.")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="List audio inputs without starting capture.")
 
@@ -23,15 +23,19 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--wet-channel", type=int, choices=(3, 4), default=3, help="USB return: 3 left, 4 right.")
     capture.add_argument("--inspect", action="store_true", help="Read the current preset; no routing changes or audio playback.")
 
+    repair = commands.add_parser("repair-capture", help="Save an aligned copy of a captured pair using its archived raw.wav; no device access.")
+    repair.add_argument("source", help="Existing capture folder containing input.wav, raw.wav, and metadata.json.")
+    repair.add_argument("--output", required=True, help="New folder for the corrected pair; must not already exist.")
+
     bridge = commands.add_parser("bridge", help="Stream a dry/wet pair from your Quad Cortex over USB.")
-    bridge.add_argument("--url", default="http://localhost:8000", help="Tone Twin server origin (default: http://localhost:8000).")
+    bridge.add_argument("--url", default="http://localhost:8000", help="Neural Amp Modeler server origin (default: http://localhost:8000).")
     bridge.add_argument("--device", help="Input device name or numeric index; otherwise find a unique Quad Cortex.")
     bridge.add_argument("--dry-channel", type=int, default=1, help="Dry USB channel, numbered from 1 (default: 1).")
     bridge.add_argument("--wet-channel", type=int, default=3, help="Wet USB channel, numbered from 1 (default: 3).")
-    bridge.add_argument("--token", help="Access key or env:VARIABLE. Prefer the environment; omitted reads TONE_TWIN_KEY.")
+    bridge.add_argument("--token", help="Access key or env:VARIABLE. Prefer the environment; omitted reads NAM_STUDIO_KEY.")
     bridge.add_argument("--synthetic", action="store_true", help="Explicit demo source for testing; opens no audio hardware.")
 
-    serve = commands.add_parser("serve", help="Serve the local Tone Twin app.")
+    serve = commands.add_parser("serve", help="Serve the local Neural Amp Modeler app.")
     serve.add_argument("--host", default="127.0.0.1", help="Listen address (default: 127.0.0.1).")
     serve.add_argument("--port", default=8000, type=int, help="Listen port (default: 8000).")
     return result
@@ -67,6 +71,9 @@ def main(argv: list[str] | None = None) -> None:
                     raise BridgeError('Give this sound a name with --name "Brit crunch - no reverb".')
                 from .capture import capture_pair
                 capture_pair(args.input, args.name.strip(), args.output, args.wet_channel)
+        elif args.command == "repair-capture":
+            from .capture import repair_capture
+            repair_capture(args.source, args.output)
         elif args.command == "bridge":
             token = resolve_token(args.token)
             asyncio.run(run_bridge(
@@ -82,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
                 raise BridgeError("Port must be between 1 and 65535.")
             import uvicorn
 
-            uvicorn.run("tone_twin.server:app", host=args.host, port=args.port)
+            uvicorn.run("nam_studio.server:app", host=args.host, port=args.port)
     except KeyboardInterrupt:
         print("\nAudio bridge stopped." if args.command == "bridge" else "\nStopped.")
     except BridgeError as exc:
@@ -92,7 +99,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error: {message}", file=sys.stderr)
         raise SystemExit(1) from None
     except Exception as exc:
-        if args.command in {"capture", "input"}:
+        if args.command in {"capture", "input", "repair-capture"}:
             print(f"Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         # Do not display server replies, connection headers, or potential secrets.
