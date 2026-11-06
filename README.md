@@ -1,92 +1,89 @@
 # Tone Twin
 
-A small guitar tone learning studio: record paired dry/processed audio from a Quad Cortex Mini, train an official Neural Amp Modeler A2 model on Modal, and compare it against the recorded reference.
+Capture an edited Quad Cortex Mini preset, train a Neural Amp Modeler on Modal, and compare the result. [Open the studio](https://drchrislevy--tone-twin-web.us-east.modal.run).
 
-## Studio
+## Capture a preset
 
-[Open Tone Twin](https://drchrislevy--tone-twin-web.us-east.modal.run)
+Run from this repository. Setup and the standard input download are needed once:
 
-The Blackroom UI has three views: Record, Train, and Compare. Train shows live batch-loss and per-epoch validation curves, progress, and the best validation epoch. Charts have separate scales because training uses a waveform/spectral objective while validation uses ESR. Toggle logarithmic/linear axes, hover or use arrow keys to inspect measurements, and return to the saved curves after training. Older runs show the validation history they recorded; training values are never invented. Source setup, file uploads, and training options are in Settings. Previous takes opens the recording library. Synthetic demo data is explicitly labelled.
+```sh
+uv sync --extra capture
+uv run tone-twin input
+```
 
-From this project directory, connect your Quad Cortex Mini over USB and run:
+1. Connect the Mini by USB. Choose a preset and scene on the device, then edit it as you like—for example, bypass delay and reverb. **Unsaved edits (the star beside the name) are supported.**
+2. Quit Cortex Control so the script can use USB control. Stop other recording/playback software. Set the Mini's USB assignment to **1/2 dry, 3/4 wet**.
+3. Capture the current sound:
+
+```sh
+uv run --extra capture tone-twin capture --name "Brit crunch - no reverb"
+```
+
+The command temporarily routes Input 1 lanes from USB 5, plays the WAV at its original level, records USB 3/4, and restores the original input routes. It **never recalls, changes scenes, saves, or reloads a preset**. Leave the device controls unchanged during capture. Every attempt has its own timestamped directory under `.data/pairs/`:
+
+```text
+20261105-...-brit-crunch-no-reverb/
+  input.wav       Original dry signal
+  output.wav      Matching mono processed signal, ready to upload
+  raw.wav         Untrimmed stereo return, including pre-roll and tail
+  metadata.json   Edited preset snapshot, gains, routing, checksums, result
+```
+
+Repeat after selecting/editing the next sound. Existing captures are never overwritten. `--wet-channel 4` selects the right processed channel instead of the default left. `--input /path/to/input.wav` chooses another mono 48 kHz source, between 12 seconds and 10 minutes. The source isn't normalized or resampled. Hardware latency is calibrated during training.
+
+To check the current preset without playback or routing changes:
+
+```sh
+uv run --extra capture tone-twin capture --inspect
+```
+
+Automatic routing uses the pinned, unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp/tree/f634ecd3dcf426090b90bc4cc176e4b500494b9e) protocol implementation and is limited to macOS / Mini CorOS 4.1.1. The narrow adapter was adapted from the decision-model project's implementation; it has no runtime dependency on that project. Ctrl-C attempts routing restoration. Disconnecting USB or force-killing the process can prevent it; the metadata records whether restoration completed.
+
+## Upload, train, compare
+
+Open **Capture library → Upload audio** in the studio. Choose `input.wav` for **Dry input**, `output.wav` for **Processed tone**, and give the pair a name. Saved pairs remain in the library.
+
+Training settings offer **Full** (default), **Lite**, or **Both**, and 10, 25, 50, 100, 500, or 1,000 epochs. The default is Full / 100 epochs. One job runs at a time. **Train a new version** reuses the same pair; the training-run selector lets you revisit previous models, curves, and comparison audio. More epochs don't guarantee a better sound: export uses the best validation checkpoint.
+
+## Training details
+
+The worker pins `neural-amp-modeler==0.13.0` and uses its A2 networks, waveform/spectral objective, batch size 16, FP32, and learning-rate schedule. Training starts from scratch.
+
+- The unmodified standard NAM v3 input is recognized by its audio checksum. It uses upstream's timing-pulse calibration and consistency check. Training covers 10–181 seconds; the final nine seconds are validation. The repeated opening passage is excluded from training.
+- Other recordings use a chronological 80/20 split and correlation-based timing. Each partition is aligned separately with its own model context.
+- Upstream's normalization sets training-target RMS to −18 dBFS using **training data only** and applies that same gain to validation. The export hook compensates the model's output gain. Source WAVs stay unchanged; comparison audio is restored to the original level.
+- Audio stays on the GPU; CUDA graphs reduce dispatch overhead. The runtime scores every validation sample after model context and selects the best whole-recording ESR. Progress reports actual batch losses and per-epoch validation.
+
+The runtime has custom batching, progress, and chunked validation, so it is not the unchanged upstream trainer. Older runs retain their original recipe and scores; they are not directly comparable to new runs. Independent guitar performances and listening tests are still needed to establish perceptual quality.
+
+A fixed amp/drive/cab sound is the intended target. Disable time effects and changing modulation for these captures. Compare plays saved validation audio; live model inference is not implemented.
+
+## Live recording and local development
+
+Live guitar recording is still available:
 
 ```sh
 uv run --env-file .env tone-twin bridge --url https://drchrislevy--tone-twin-web.us-east.modal.run
 ```
 
-Then record in the browser, train, and switch between dry, reference, and model playback. Download the exported `.nam` to use in a compatible NAM player. Keep the bridge running while recording; Ctrl+C disconnects it. The local `.env` already contains this studio's private workspace key and is excluded from Git.
+The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp signal. Don't run the bridge and capture command together. `uv run tone-twin devices` lists interfaces. For local UI development, use `uv run tone-twin serve`; local training is deliberately unavailable without a configured worker.
 
-## Local setup
+## Modal
 
-```sh
-uv sync
-uv run tone-twin devices
-uv run tone-twin serve
-```
+`modal_app.py` defines a web function and an isolated H100/A10G training worker. The GPU scales to zero after 20 idle minutes; web idle timeout is two minutes. Idle GPU time is billable. Live recording warms the GPU; local WAV capture currently does not. Web concurrency is target 16 / maximum 64, with one web container owning the live bridge, so sticky sessions are unnecessary. Recordings and models persist in the `tone-twin-data` Volume.
 
-Start a bridge in a second terminal after connecting the Quad Cortex Mini:
+The private workspace key lives in `.env` and the `tone-twin-auth` Modal Secret, never in Git. For a new deployment, provision that secret with `uv run modal secret create tone-twin-auth --from-dotenv .env`. Deploy when recording/training are idle:
 
 ```sh
-uv run tone-twin bridge --url http://127.0.0.1:8000
+uv run modal deploy --strategy recreate modal_app.py
 ```
 
-The bridge selects a Quad Cortex by name, never the laptop microphone automatically. By default it captures USB channels 1 (dry) and 3 (processed) at 48 kHz. Check the Mini's dry/wet swap setting. Use `--dry-channel`, `--wet-channel`, and `--device` to choose explicitly. Channels are numbered from 1. Monitor through the Mini's own outputs.
-
-For a hardware-free transport check, the explicit `--synthetic` flag generates a labelled synthetic source. No audio input is opened.
-
-## Hosting on Modal
-
-`modal_app.py` hosts the web app and a separate GPU training function, preferring H100 with an A10G fallback. H100 was faster in the training benchmark, but has a higher per-second price. CPU memory snapshots preload PyTorch and NAM imports for subsequent cold starts; the first snapshot creation still takes extra startup time. Recordings, training checkpoints and models live in the `tone-twin-data` Modal Volume. Both services scale to zero when idle. A running training job has a one-hour timeout and training concurrency is limited to one.
-
-The GPU worker has `min_containers=0` and a 1,200-second idle window (20 minutes, Modal's documented maximum), increased from the default 60 seconds. Idle GPU time is billable. Starting a recording asynchronously warms that same training function and initializes CUDA; periodic requests keep it ready during capture. Warm-up failures do not interrupt recording. Warm-up requests stop when recording ends, disconnects, or reaches the ten-minute recording limit. Opening the studio or monitoring alone does not warm the GPU. The web container uses a separate 120-second idle window.
-
-One web container owns the active audio connection and browser controls. This initial single-user design needs no sticky-session routing. The bridge sends ordered 48 kHz PCM pairs over WebSocket; sequence gaps stop a take and mark it interrupted. Recordings survive web-container restarts after saving. A container interruption during recording can lose the unsaved take.
-
-Web input concurrency is explicitly configured with a target of 16 and maximum of 64 (including open WebSockets). The container cap remains one because this studio owns a shared recording connection in memory; the concurrency target does not override that cap or enable horizontal scaling. Cloud file operations run in worker threads so concurrent requests and audio packets can make progress. Upload/save and training-dispatch operations retain their locks and finish even when the initiating client disconnects.
-
-The UI reads a shared metadata snapshot. Concurrent first loads share one scan, active jobs refresh in the background about once a second, and the catalog is rescanned every 30 seconds while being polled. Saved takes and submitted jobs update the cache immediately. Completed jobs are reused between scans. A revision token lets unchanged polls return only live bridge state; full responses are compressed. Refreshing storage never blocks an already-loaded UI snapshot.
-
-Audio is copied once into a bounded 512 MiB local disk cache, shared across simultaneous requests. Playback supports HTTP byte ranges and private browser caching; seeks and A/B switches no longer reread entire files from the Volume. Files being streamed are pinned until the response completes. Capture waveforms reuse saved peaks rather than downloading and decoding the same WAV a second time.
-
-Live verification with 16 takes measured unchanged state polls at 76 ms median (187 bytes), versus the previous 8–22-second status requests. Bursts of 16 and 32 mixed status/config/audio-range requests completed in 0.37 and 0.54 seconds with no failures. A 100-epoch A10G run delivered all validation points and downloadable artifacts while status polls stayed at 126 ms median; a simultaneous 16-request burst peaked at 437 ms. These measurements include the client's network round trip and vary with network and cold-start state.
-
-Training publishes actual batch measurements about every two seconds and after each validation epoch. The browser polls once per second during active jobs. Up to 2,000 training points are retained; longer histories thin older measured points without smoothing their values. Completed histories remain in the job status on the Volume.
-
-Progress snapshots are written by one background writer, with at most one pending snapshot. Each contains the full history; intermediate snapshots can be combined without losing measurements. Completion waits for the final write and Volume commit. Loss values cross from GPU to CPU together at publication time, and best-checkpoint files stay on local disk until the winning checkpoint is copied to the Volume at the end. Interrupted runs cannot resume from those temporary checkpoints.
-
-Deploy only when recording and training are idle. Open WebSockets can prevent a rolling deployment from replacing the sole web container. For an intentional restart use `uv run modal deploy --strategy recreate modal_app.py`, then reconnect the audio bridge. If the same version is already deployed, use `uv run modal app rollover tone-twin --strategy recreate`.
-
-For a new deployment, create an untracked `.env` with a random `TONE_TWIN_KEY`, then:
-
-```sh
-uv run modal secret create tone-twin-auth --from-dotenv .env
-uv run modal deploy modal_app.py
-```
-
-The hosted UI asks for that workspace key. The bridge reads it from the `TONE_TWIN_KEY` environment variable; keep it out of URLs and source control. Local training is deliberately unavailable unless the real NAM training dependencies and worker have been configured. The local UI does not simulate a successful training run.
-
-## Training
-
-Uses Steven Atkinson's `neural-amp-modeler==0.13.0` and its canonical A2 recipe, with Lite, Full, or both model sizes. GPU dependencies are installed in the Modal image, not the local capture environment. Training checks silence, clipping and timing; reserves a chronological validation segment; and exports a `.nam`, measured validation error and synchronized comparison audio. Start with one fixed amp/drive/cabinet preset and a few minutes of varied playing. This initial trainer uses one dry and one processed channel.
-
-New runs default to 100 epochs, matching NAM's official full-trainer default. Shorter 10/25/50-epoch runs remain available for quick experiments. More epochs allow further optimization, but the best validation checkpoint is still selected rather than assuming the final epoch sounds best.
-
-Training keeps the upstream waveform/spectral loss, FP32 precision, batch size 16, and learning-rate schedule. The complete aligned audio pair stays in GPU memory (about 69 MB for three minutes), and batches are gathered on the device. CUDA graphs replay NAM's forward/loss/backward operations, with a separate graph for the last smaller batch; Adam uses its fused CUDA implementation. Graph wrappers do not change exported weights or checkpoint keys. Validation uses total squared error divided by total reference energy over the entire held-out recording, including the final partial chunk. This avoids near-silent chunks dominating an average of individual ESR ratios. Only ESR is computed during validation; unused spectral losses are skipped. The best validation checkpoint is exported, which may be earlier than the final epoch. Existing runs retain their original metrics and models; new runs identify this metric as `whole_recording_esr`.
-
-Batch size 64 and a larger learning rate were benchmarked on a real capture but produced worse validation error for little additional speed, so the default remains 16. BF16 was slower for this network. Inductor compilation added about 28 seconds of setup in the microbenchmark, so the runtime uses CUDA graph capture without compiling new kernels. Training configuration records the GPU and execution settings; completed status includes total worker time and peak allocated GPU memory. Platform queue/cold-start time is additional.
-
-On a 178.7-second real capture with Lite/25 epochs, a same-H100 comparison measured 56.0 seconds for the old worker versus 14.1 seconds for the optimized worker, including preparation/export but excluding container startup. Median epoch time fell from 1.85 to 0.41 seconds. The deployed verification completed training in 12.2 seconds, worker processing in 16.7 seconds, and submission-to-result in 39 seconds including first-time CPU snapshot initialization. Peak allocated GPU memory was 309 MB. Timings vary by GPU availability, capture, model size, and cold-start state; numerical regression checks do not guarantee equivalent perceptual quality for independently trained runs.
-
-Job status includes `timings_seconds` for reading audio, quality checks, alignment, model/data setup, fitting, and rendering/export. On a warm H100 with that capture, reading took 0.24 seconds, checks 0.11 seconds, and alignment 0.11 seconds: about half a second combined. Alignment still uses only the training portion of the finished take, preserving the held-out validation segment. Capture already checks packet continuity, finite samples, and levels; there is no denoising, EQ, or independent loudness normalization before training.
-
-The 12-second minimum is for pipeline experiments, not a guarantee of a useful model. Include quiet and hard picking, sustained notes, and different parts of the neck. Turn off delay, reverb, and modulation for the first captures. Compare uses the held-out end of the recording and a shared playback gain. It does not yet perform live model inference on new guitar playing. Continue monitoring through the Mini while capturing.
-
-Original upstream: https://github.com/sdatkinson/neural-amp-modeler
+Reconnect the live bridge after deployment. Captures, `.env`, and scratch experiments are ignored by Git.
 
 ## Checks
 
 ```sh
-uv run pytest -q
+uv run --extra capture pytest -q
 ```
 
-45 local tests plus 6 subtests cover upload/authentication, dataset validation, timing alignment, capture framing, background progress writing, nonblocking worker warm-up with failure/disconnect handling, concurrent slow-I/O requests, live cache refreshes, interrupted uploads, and audio byte ranges/cache eviction. Seven additional runtime regression tests require the NAM training image (and are skipped locally without NAM/PyTorch); they cover silence, chunk boundaries, partial tails, packed models, batch equivalence to NAM, shuffled coverage, and graph/eager loss and gradient agreement. GPU checks exercise Lite on a real three-minute capture and Full/Both on synthetic audio, verifying export, live measurements, and agreement between checkpoint ESR and rendered audio. These numerical checks do not establish perceptual tone quality.
+Offline tests exercise upload/auth, recording transport, interrupted capture restoration, blocked preset writes, timing/split rules, and responsive storage/streaming. Training-runtime tests additionally require the Modal training image and include normalization/export gain and GPU graph equivalence. Hardware playback is always an explicit capture command, never part of the tests.

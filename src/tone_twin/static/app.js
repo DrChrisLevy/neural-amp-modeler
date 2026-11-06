@@ -175,6 +175,11 @@
   function render() {
     const take = capture();
     const currentJob = job();
+    const runs = state.jobs.filter((item) => item.capture_id === selectedId);
+    $('run-picker').hidden = mode === 'record' || runs.length < 2;
+    const options = runs.map((item) => `<option value="${escapeHtml(item.id)}">${item.model_size === 'both' ? 'Lite + Full' : item.model_size === 'full' ? 'Full' : 'Lite'} · ${item.epochs} epochs · ${escapeHtml(item.status)} · ${escapeHtml(new Date(item.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</option>`).join('') + (mode === 'train' ? '<option value="__new__">New training run…</option>' : '');
+    if ($('training-run').innerHTML !== options) $('training-run').innerHTML = options;
+    $('training-run').value = selectedJobId === '__new__' && mode === 'train' ? '__new__' : currentJob?.id || '';
     const recording = state.bridge.recording;
     safeSessionWrite('tone-twin.mode', mode);
     document.body.classList.toggle('recording', Boolean(recording));
@@ -273,6 +278,7 @@
     validationChart.update(validation, item.epochs, logarithmicLoss, running ? 'Measured after the first epoch.' : 'No validation measurements recorded.');
     $('learning-best').textContent = Number.isFinite(item.best_loss) ? `Best validation ${window.ToneTwinLossChart.format(item.best_loss)} · epoch ${item.best_epoch}` : 'Lower is better · separate scales';
     $('learning-note').textContent = oldRun ? 'Saved validation history. New runs also log training loss live.' : running ? 'Training updates about every 2 seconds; validation after each epoch. Lower is better · separate scales.' : 'Measured training batches and validation epochs. Lower is better · separate scales.';
+    if (item.status === 'completed' && !item.data_recipe) $('learning-note').textContent += ' Earlier training recipe; scores may differ from new runs.';
   }
   function renderNewTraining() {
     const take = capture();
@@ -574,6 +580,13 @@
   }
 
   document.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
+  $('training-run').addEventListener('change', () => {
+    selectedJobId = $('training-run').value;
+    pauseAudio();
+    clearStatus();
+    render();
+    if (mode === 'compare') syncAudioSource();
+  });
   $('loss-scale').addEventListener('click', () => {
     logarithmicLoss = !logarithmicLoss;
     $('loss-scale').setAttribute('aria-pressed', String(logarithmicLoss));

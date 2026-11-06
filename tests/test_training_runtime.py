@@ -6,8 +6,8 @@ import json
 
 try:
     import torch
-    from tone_twin.training_runtime import TrainingBatches, ValidationChunks, _WholeRecordingValidation, ValidatedLightningModule
-    from tone_twin.training import _select_model_config
+    from tone_twin.training_runtime import TrainingBatches, ValidationChunks, _WholeRecordingValidation, ValidatedLightningModule, prepare_datasets
+    from tone_twin.training import _select_model_config, split_segments
     from nam.data import Dataset
 except ModuleNotFoundError as exc:
     if exc.name not in {"torch", "nam"}:
@@ -31,6 +31,39 @@ class ValidationHarness(_WholeRecordingValidation, torch.nn.Module):
 
 
 class ValidationRegressionTests(unittest.TestCase):
+    def test_normalization_uses_only_training_energy_and_preserves_source(self):
+        import numpy as np
+        dry = np.sin(np.arange(48000 * 12) * .017).astype("float32") * .1
+        wet = dry * 2
+        split = split_segments(len(dry), 7)
+        wet[split["train_stop"]:] *= .1
+        original_dry, original_wet = dry.copy(), wet.copy()
+        train, val, gain = prepare_datasets(dry, wet, split, 7, 13)
+        self.assertAlmostEqual(float(train.y.square().mean().sqrt()), 10**(-18/20), places=6)
+        np.testing.assert_array_equal(dry, original_dry)
+        np.testing.assert_array_equal(wet, original_wet)
+        np.testing.assert_allclose(train.x.numpy(), dry[:split["train_stop"]-13])
+        np.testing.assert_allclose(val.y.numpy() / gain, wet[split["train_stop"]+13:], atol=1e-7)
+        self.assertEqual(len(val.x), len(dry) - split["train_stop"] - 13)
+
+    def test_export_hook_compensates_training_gain_exactly_once(self):
+        import numpy as np
+        recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
+        net = ValidatedLightningModule.init_from_config(_select_model_config(recipe, "lite")).net
+        net.sample_rate = 48000
+        dry = np.sin(np.arange(48000 * 12) * .017).astype("float32") * .1
+        train, val, gain = prepare_datasets(dry, dry * .2, split_segments(len(dry), net.receptive_field), net.receptive_field, 0)
+        # Handshakes on both partitions must not double-apply compensation.
+        train.handshake(net)
+        val.handshake(net)
+        hooks = [h for h in net.export_model_dict_post_hooks if isinstance(h, Dataset._ScaleOutputHook)]
+        self.assertEqual(len(hooks), 1)
+        self.assertAlmostEqual(hooks[0].scale, 1/gain, places=10)
+        exported = {"architecture": "WaveNet", "config": {"head_scale": .01}, "weights": [1, 2, .01], "metadata": {}}
+        hooks[0].apply(exported)
+        self.assertAlmostEqual(exported["config"]["head_scale"], .01/gain)
+        self.assertAlmostEqual(exported["weights"][-1], .01/gain)
+
     def test_resident_batches_match_nam_windows_and_preserve_small_final_batch(self):
         dry = torch.linspace(-0.1, 0.1, 111)
         wet = dry * 2

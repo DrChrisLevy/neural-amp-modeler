@@ -1,6 +1,8 @@
 """Audio integrity checks that run without PyTorch, NAM, or a GPU."""
 
 import json
+import hashlib
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +19,8 @@ from tone_twin.training import (
     analyze_audio,
     estimate_delay,
     split_segments,
+    is_standard_input,
+    check_repeated_output,
     train_job,
 )
 
@@ -53,6 +57,31 @@ class AlignmentTests(unittest.TestCase):
 
 
 class QualityTests(unittest.TestCase):
+    def test_standard_split_excludes_the_repeated_opening_excerpt(self):
+        split = split_segments(190 * SAMPLE_RATE, 6347, standard=True)
+        self.assertEqual(split["train_start"], 10 * SAMPLE_RATE)
+        self.assertEqual(split["train_stop"], 181 * SAMPLE_RATE)
+        self.assertEqual(split["validation_input_start"], 181 * SAMPLE_RATE)
+        self.assertEqual(split["validation_stop"], 190 * SAMPLE_RATE)
+        with self.assertRaises(ValueError):
+            split_segments(189 * SAMPLE_RATE, 6347, standard=True)
+
+    def test_standard_detection_requires_matching_audio_not_just_duration(self):
+        dry = np.zeros(190 * SAMPLE_RATE, dtype="float32")
+        self.assertFalse(is_standard_input(dry))
+        digest = hashlib.sha256(dry.astype("<f4").tobytes()).hexdigest()
+        with patch("tone_twin.training.NAM_V3_AUDIO_SHA256", digest):
+            self.assertTrue(is_standard_input(dry))
+            dry[1] = .1
+            self.assertFalse(is_standard_input(dry))
+
+    def test_changed_repeated_tone_is_rejected(self):
+        audio = np.full(190 * SAMPLE_RATE, .1, dtype="float32")
+        self.assertEqual(check_repeated_output(audio), 0)
+        audio[-9 * SAMPLE_RATE:] *= 2
+        with self.assertRaisesRegex(ValueError, "tone changed"):
+            check_repeated_output(audio)
+
     def test_silence_nonfinite_stereo_and_clipping_are_rejected(self):
         bad = {
             "silence": np.zeros(1000),

@@ -14,6 +14,15 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="List audio inputs without starting capture.")
 
+    source = commands.add_parser("input", help="Download and verify NAM's standard 3:10 input WAV.")
+    source.add_argument("--output", default=".data/input.wav")
+    capture = commands.add_parser("capture", help="Reamp a WAV through the currently edited Quad Cortex preset.")
+    capture.add_argument("--input", default=".data/input.wav", help="Mono 48 kHz WAV (default: .data/input.wav).")
+    capture.add_argument("--name", help="Name for this version of your edited preset.")
+    capture.add_argument("--output", default=".data/pairs", help="Parent folder for separately saved pairs.")
+    capture.add_argument("--wet-channel", type=int, choices=(3, 4), default=3, help="USB return: 3 left, 4 right.")
+    capture.add_argument("--inspect", action="store_true", help="Read the current preset; no routing changes or audio playback.")
+
     bridge = commands.add_parser("bridge", help="Stream a dry/wet pair from your Quad Cortex over USB.")
     bridge.add_argument("--url", default="http://localhost:8000", help="Tone Twin server origin (default: http://localhost:8000).")
     bridge.add_argument("--device", help="Input device name or numeric index; otherwise find a unique Quad Cortex.")
@@ -40,6 +49,24 @@ def main(argv: list[str] | None = None) -> None:
             print("Index  Input channels  Default rate  Device")
             for device in devices:
                 print(f"{device.index:>5}  {device.channels:>14}  {device.default_sample_rate:>9.0f} Hz  {device.name}")
+        elif args.command == "input":
+            from .capture import download_input
+            print(f"NAM v3 input (3:10, mono, 48 kHz): {download_input(args.output).resolve()}")
+        elif args.command == "capture":
+            try:
+                from .quad_cortex import Mini
+            except ModuleNotFoundError as exc:
+                raise BridgeError("Install capture support with: uv sync --extra capture") from exc
+            if args.inspect:
+                import json
+                with Mini() as mini:
+                    _, snapshot = mini.snapshot()
+                    print(json.dumps({k: snapshot[k] for k in ("preset_name", "unsaved_edits", "position", "scene", "firmware")}, indent=2))
+            else:
+                if not args.name or not args.name.strip():
+                    raise BridgeError('Give this sound a name with --name "Brit crunch - no reverb".')
+                from .capture import capture_pair
+                capture_pair(args.input, args.name.strip(), args.output, args.wet_channel)
         elif args.command == "bridge":
             token = resolve_token(args.token)
             asyncio.run(run_bridge(
@@ -65,6 +92,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error: {message}", file=sys.stderr)
         raise SystemExit(1) from None
     except Exception as exc:
+        if args.command in {"capture", "input"}:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
         # Do not display server replies, connection headers, or potential secrets.
         print(
             f"Error: {type(exc).__name__}. Check the server connection, access key, "

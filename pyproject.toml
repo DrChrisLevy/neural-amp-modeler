@@ -23,6 +23,11 @@ dependencies = [
 [project.scripts]
 tone-twin = "tone_twin:main"
 
+[project.optional-dependencies]
+capture = [
+    "qc-mcp",
+]
+
 [build-system]
 requires = ["uv_build>=0.13.4,<0.14.0"]
 build-backend = "uv_build"
@@ -31,3 +36,6 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.2.0",
 ]
+
+[tool.uv.sources]
+qc-mcp = { git = "https://github.com/lexasoft123/qc-mcp", rev = "f634ecd3dcf426090b90bc4cc176e4b500494b9e" }

@@ -4,7 +4,23 @@ import math
 
 import torch
 from nam.train.lightning_module import LightningModule, PackedLightningModule
+from nam.data import Dataset as NAMDataset, NormalizeJointDatasetOutput
 from torch.utils.data import Dataset, IterableDataset
+
+
+def prepare_datasets(dry, wet, split, receptive_field, delay):
+    """Use upstream slicing, alignment, RMS scaling, and export compensation.
+
+    Split *before* alignment, as NAM does. The repeated opening v3 excerpt is
+    excluded by the caller's split, and neither partition borrows context.
+    """
+    common = dict(x=torch.from_numpy(dry), y=torch.from_numpy(wet), nx=receptive_field,
+                  sample_rate=48000, delay=delay, require_input_pre_silence=None)
+    training = NAMDataset(**common, start_samples=split["train_start"], stop_samples=split["train_stop"], ny=8192)
+    validation = NAMDataset(**common, start_samples=split["validation_input_start"], stop_samples=split["validation_stop"], ny=None)
+    rms = (torch.sum(training.y.square()).item() / training.y.numel()) ** 0.5
+    NormalizeJointDatasetOutput(level_rms_dbfs=-18.0).apply(training, validation)
+    return training, validation, 10 ** (-18 / 20) / rms
 
 
 class TrainingBatches(IterableDataset):

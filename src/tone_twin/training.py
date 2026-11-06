@@ -7,6 +7,7 @@ Only ``train_job`` needs the training image's GPU dependencies.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.metadata
 import importlib.resources
 import json
@@ -26,6 +27,7 @@ NAM_VERSION = "0.13.0"
 MIN_SECONDS = 12
 MAX_ALIGNMENT_SAMPLES = 4096
 ALIGNMENT_HEADROOM = 16
+NAM_V3_AUDIO_SHA256 = "c3c2b88c8fdead4f958ab146de34bd4f85c4ba5808c7b933c55e85044a1910f2"
 
 
 def _now() -> str:
@@ -159,14 +161,36 @@ def align_pair(dry: Any, wet: Any, delay: int):
     return dry, wet
 
 
-def split_segments(length: int, receptive_field: int) -> dict[str, int]:
+def is_standard_input(dry) -> bool:
+    """Recognize v3 by sample content, even after a WAV header is rewritten."""
+    import numpy as np
+
+    return (len(dry) == 190 * SAMPLE_RATE
+            and hashlib.sha256(np.asarray(dry, dtype="<f4").tobytes()).hexdigest() == NAM_V3_AUDIO_SHA256)
+
+
+def check_repeated_output(wet) -> float:
+    """NAM v3 repeats its validation stimulus; the device should be consistent."""
+    import numpy as np
+
+    first, last = wet[:9 * SAMPLE_RATE], wet[-9 * SAMPLE_RATE:]
+    energy = float(np.sum(np.square(last, dtype=np.float64)))
+    error = float(np.sum(np.square(first - last, dtype=np.float64))) / max(energy, 1e-30)
+    if error > 0.01:
+        raise ValueError("The tone changed between NAM's repeated test passages. Check noise, gates, time effects, and preset controls, then capture again.")
+    return error
+
+
+def split_segments(length: int, receptive_field: int, *, standard=False) -> dict[str, int]:
     """Keep train and validation inputs disjoint, including model context."""
-    split = int(length * 0.8)
+    if standard and length != 190 * SAMPLE_RATE:
+        raise ValueError("NAM v3 must be exactly 190 seconds before alignment")
+    split = 181 * SAMPLE_RATE if standard else int(length * 0.8)
     validation_target_start = split + receptive_field - 1
     if split < receptive_field + 8192 or length - validation_target_start < SAMPLE_RATE:
         raise ValueError("Recording is too short for separate training and validation audio")
     return {
-        "train_start": 0,
+        "train_start": 10 * SAMPLE_RATE if standard else 0,
         "train_stop": split,
         "validation_input_start": split,
         "validation_target_start": validation_target_start,
@@ -258,8 +282,8 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         import soundfile as sf
 
         epochs = int(status["epochs"])
-        if not 10 <= epochs <= 100:
-            raise ValueError("Training epochs must be between 10 and 100")
+        if not 10 <= epochs <= 1000:
+            raise ValueError("Training epochs must be between 10 and 1000")
         size = status["model_size"]
         if size not in {"lite", "full", "both"}:
             raise ValueError("Model size must be lite, full, or both")
@@ -279,17 +303,29 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         if len(dry) < MIN_SECONDS * SAMPLE_RATE:
             raise ValueError(f"Record at least {MIN_SECONDS} seconds before training")
         quality = {"dry": analyze_audio(dry, "Dry audio"), "wet": analyze_audio(wet, "Wet audio"), "warnings": []}
+        standard = is_standard_input(dry)
+        if standard:
+            quality["repeat_esr"] = check_repeated_output(wet)
         if len(dry) < 30 * SAMPLE_RATE:
             quality["warnings"].append("This is a short test capture; record a few minutes of varied playing for a useful model.")
         if min(quality["dry"]["rms_dbfs"], quality["wet"]["rms_dbfs"]) < -55:
             quality["warnings"].append("Capture level is low; more input level may improve the training signal.")
         phase_done("audio_checks", phase_started)
         phase_started = time.monotonic()
-        # The held-out fifth is never used to calibrate alignment.
-        calibration_stop = int(len(dry) * 0.8)
-        alignment = estimate_delay(dry[:calibration_stop], wet[:calibration_stop])
-        dry, wet = align_pair(dry, wet, alignment["applied_delay_samples"])
-        dry, wet = np.ascontiguousarray(dry), np.ascontiguousarray(wet)
+        if standard:
+            from nam.train.core import _calibrate_latency_v3
+            calibration = _calibrate_latency_v3(wet, manual_available=False, show_plots=False, _override_suppress_plots=True)
+            if calibration.recommended is None:
+                raise ValueError("NAM could not calibrate the test pulses. Check the USB routing and levels.")
+            applied = int(calibration.recommended)
+            alignment = {"method": "nam_v3_blips", "applied_delay_samples": applied,
+                         "estimated_delay_samples": applied + calibration.safety_factor,
+                         "retained_delay_samples": calibration.safety_factor,
+                         "calibration": calibration.model_dump(mode="json"), "warnings": []}
+        else:
+            # Arbitrary paired takes use correlation on training audio only.
+            calibration_stop = int(len(dry) * 0.8)
+            alignment = estimate_delay(dry[:calibration_stop], wet[:calibration_stop])
         phase_done("alignment", phase_started)
         quality["warnings"].extend(alignment["warnings"])
         update(alignment=alignment, quality=quality, duration_seconds=len(dry) / SAMPLE_RATE, progress=0.03)
@@ -299,9 +335,8 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         import torch
         import pytorch_lightning as pl
         from torch.utils.data import DataLoader
-        from nam.data import Dataset
         from nam.train.lightning_module import PackedMaskCallback
-        from .training_runtime import TrainingBatches, ValidationChunks, ValidatedLightningModule, ValidatedPackedLightningModule
+        from .training_runtime import TrainingBatches, ValidationChunks, ValidatedLightningModule, ValidatedPackedLightningModule, prepare_datasets
 
         installed = importlib.metadata.version("neural-amp-modeler")
         if installed != NAM_VERSION:
@@ -320,33 +355,32 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         model = model_class.init_from_config(config)
         model.net.sample_rate = SAMPLE_RATE
         receptive_field = int(model.net.receptive_field)
-        split = split_segments(len(dry), receptive_field)
-        train_stop = split["train_stop"]
-        analyze_audio(dry[split["validation_target_start"] :], "Validation dry audio")
-        analyze_audio(wet[split["validation_target_start"] :], "Validation wet audio")
-        # Each partition starts with its own unscored receptive-field context.
-        # No training target or input sample appears in the validation partition.
-        kwargs = dict(nx=receptive_field, ny=8192, sample_rate=SAMPLE_RATE, require_input_pre_silence=None)
-        training = Dataset(torch.from_numpy(dry[:train_stop]), torch.from_numpy(wet[:train_stop]), **kwargs)
-        validation = Dataset(torch.from_numpy(dry[train_stop:]), torch.from_numpy(wet[train_stop:]), **kwargs)
+        split = split_segments(len(dry), receptive_field, standard=standard)
+        training, validation, normalization_gain = prepare_datasets(
+            dry, wet, split, receptive_field, alignment["applied_delay_samples"])
+        analyze_audio(validation.x.numpy(), "Validation dry audio")
+        analyze_audio(validation.y.numpy() / normalization_gain, "Validation wet audio")
         for dataset in (training, validation):
             dataset.handshake(model.net)
             model.net.handshake(dataset)
         # At the ten-minute capture limit the mono pair occupies only ~230 MB.
         # Keep it on the GPU and gather batches there instead of copying each one.
-        gpu_dry, gpu_wet = torch.from_numpy(dry).cuda(), torch.from_numpy(wet).cuda()
-        training_batches = TrainingBatches(gpu_dry[:train_stop], gpu_wet[:train_stop], receptive_field)
+        training_batches = TrainingBatches(training.x.cuda(), training.y.cuda(), receptive_field)
         train_loader = DataLoader(training_batches, batch_size=None, num_workers=0)
-        validation_chunks = ValidationChunks(gpu_dry[train_stop:], gpu_wet[train_stop:], receptive_field)
+        validation_chunks = ValidationChunks(validation.x.cuda(), validation.y.cuda(), receptive_field)
         validation_loader = DataLoader(validation_chunks, batch_size=None, num_workers=0)
         _atomic_json(directory / "model_config.json", config)
         _atomic_json(directory / "training_config.json", {"nam_version": installed, "epochs": epochs, "split": split, "alignment": alignment, "sample_rate": SAMPLE_RATE, "capture": metadata,
+                    "input_signal": "nam_v3" if standard else "custom", "data_recipe": "a2_rms_v3_split_v1",
+                    "target_rms_dbfs": -18, "normalization_gain": normalization_gain,
                     "validation_metric": "whole_recording_esr", "batch_size": 16, "fused_adam": True, "precision": "32-true", "audio_device": "cuda", "cuda_graphs": True,
                     "gpu": torch.cuda.get_device_name(), "audio_bytes": dry.nbytes + wet.nbytes})
         from .progress_writer import ProgressWriter
         publisher = ProgressWriter(publish)
         phase_done("model_and_data_setup", phase_started)
-        update(stage="training", timings_seconds=timings.copy(), validation_metric="whole_recording_esr", receptive_field_samples=receptive_field, validation_seconds=(len(dry) - split["validation_target_start"]) / SAMPLE_RATE, progress=0.05)
+        update(stage="training", timings_seconds=timings.copy(), validation_metric="whole_recording_esr",
+               data_recipe="a2_rms_v3_split_v1", input_signal="nam_v3" if standard else "custom",
+               receptive_field_samples=receptive_field, validation_seconds=validation_chunks.samples / SAMPLE_RATE, progress=0.05)
 
         class Progress(pl.Callback):
             last_update = 0.0
@@ -444,11 +478,16 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         phase_started = time.monotonic()
         best = model_class.load_from_checkpoint(saved_checkpoint, map_location="cpu", **model_class.parse_config(config))
         best.net.sample_rate = SAMPLE_RATE
+        # Dataset export hooks are not checkpoint weights. Reattach the official
+        # gain compensation to the selected model before exporting its .nam.
+        training.handshake(best.net)
+        best.net.handshake(training)
         best.eval().cuda()
-        start = split["validation_target_start"]
-        output = _render(best.net, dry, start, len(dry))
+        start = receptive_field - 1
+        validation_dry = validation.x.numpy()
+        output = _render(best.net, validation_dry, start, len(validation_dry)) / normalization_gain
         predictions = {"lite": output[0], "full": output[1]} if is_packed else {size: output}
-        reference = wet[start:]
+        reference = validation.y.numpy()[start:] / normalization_gain
         if float(np.mean(np.square(reference, dtype=np.float64))) < 1e-10:
             raise ValueError("The held-out end of the capture is silent; finish with varied guitar playing")
         esrs = {
@@ -458,7 +497,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         if not all(math.isfinite(value) for value in esrs.values()):
             raise RuntimeError("Model produced non-finite validation metrics")
         selected = "full" if is_packed else size
-        audition_gain = _write_audition(directory, dry[start:], reference, predictions, selected)
+        audition_gain = _write_audition(directory, validation_dry[start:], reference, predictions, selected)
         with torch.inference_mode():
             best.net.export(directory, basename="model_pending", other_metadata={"name": f"Tone Twin {job_id}", "capture_id": status["capture_id"]})
         # Invalid model numbers must never become a downloadable successful run.

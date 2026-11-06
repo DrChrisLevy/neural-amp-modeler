@@ -79,3 +79,16 @@ def test_local_mode_does_not_fake_training(tmp_path):
     client = TestClient(create_app(tmp_path))
     take = client.post("/api/demo").json()
     assert client.post("/api/train", json={"capture_id": take["id"]}).status_code == 503
+
+
+def test_extended_epoch_choices_and_full_default(tmp_path):
+    from tone_twin.server import TrainCommand
+    from pydantic import ValidationError
+    import pytest
+
+    assert TrainCommand(capture_id="x").model_size == "full"
+    for epochs in (50, 100, 500, 1000):
+        assert TrainCommand(capture_id="x", epochs=epochs).epochs == epochs
+    for epochs in (0, 1001):
+        with pytest.raises(ValidationError):
+            TrainCommand(capture_id="x", epochs=epochs)
