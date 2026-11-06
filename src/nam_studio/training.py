@@ -400,6 +400,9 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         torch.cuda.reset_peak_memory_stats()
         pl.seed_everything(17, workers=True)
         torch.set_float32_matmul_precision("high")
+        # Tune convolution kernels for this GPU before CUDA graphs capture them.
+        # The startup cost is amortized over the repeated training-window shapes.
+        torch.backends.cudnn.benchmark = True
         recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
         config = _select_model_config(recipe, size)
         # Same Adam update, with the many small parameter operations fused on CUDA.
@@ -427,7 +430,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         _atomic_json(directory / "training_config.json", {"nam_version": installed, "epochs": epochs, "split": split, "alignment": alignment, "sample_rate": SAMPLE_RATE, "capture": metadata,
                     "input_signal": "nam_v3" if standard else "custom", "data_recipe": "a2_rms_v3_split_v1",
                     "target_rms_dbfs": -18, "normalization_gain": normalization_gain,
-                    "validation_metric": "whole_recording_esr", "batch_size": 16, "fused_adam": True, "precision": "32-true", "audio_device": "cuda", "cuda_graphs": True,
+                    "validation_metric": "whole_recording_esr", "batch_size": 16, "fused_adam": True, "precision": "32-true", "audio_device": "cuda", "cuda_graphs": True, "cudnn_benchmark": True,
                     "gpu": torch.cuda.get_device_name(), "audio_bytes": dry.nbytes + wet.nbytes})
         from .progress_writer import ProgressWriter
         publisher = ProgressWriter(publish)
