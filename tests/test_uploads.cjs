@@ -6,7 +6,7 @@ const path = require('node:path');
 const {webcrypto} = require('node:crypto');
 function setup() {
   const context = {window:{}, crypto:webcrypto, FormData};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/nam_studio/static/uploads.js'), 'utf8'), context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../frontend/src/lib/engines/uploads.js'), 'utf8'), context);
   const requests=[], completed=[];
   let changes=0, unauthorized=0;
   const uploads = new context.window.NAMUploads({

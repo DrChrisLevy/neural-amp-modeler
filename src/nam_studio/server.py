@@ -475,8 +475,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     async def index():
         path = static / "index.html"
         if not path.exists():
-            return JSONResponse({"name": "Neural Amp Modeler", "status": "Studio design in progress"})
-        return FileResponse(path)
+            return JSONResponse({"detail": "Frontend assets are missing. Run npm ci --prefix frontend && npm run build --prefix frontend."}, status_code=503)
+        return FileResponse(path, headers={"Cache-Control": "no-cache"})
 
     studio.mount("/static", StaticFiles(directory=static), name="static")
     studio.state.store = store

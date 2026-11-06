@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 const context = vm.createContext({window: {}});
-vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/nam_studio/static/loss-chart.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../frontend/src/lib/engines/training-metrics.js'), 'utf8'), context);
 const series = (job) => JSON.parse(JSON.stringify(context.window.NAMLossChart.trainingSeries(job)));
 
 test('restores all 500 epochs when old batch history jumps straight to epoch 334', () => {

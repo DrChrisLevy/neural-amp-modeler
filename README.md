@@ -119,7 +119,21 @@ Live recording is available under **Add pair → Record a live pair**. The Recor
 uv run --env-file .env neural-amp-modeler bridge --url https://drchrislevy--neural-amp-modeler-web.us-east.modal.run
 ```
 
-The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp signal. Don't run the bridge and capture command together. `uv run neural-amp-modeler devices` lists interfaces. For local UI development, use `uv run neural-amp-modeler serve`; local training is deliberately unavailable without a configured worker.
+The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp signal. Don't run the bridge and capture command together. `uv run neural-amp-modeler devices` lists interfaces. For local UI development, see the frontend setup below. Local training is deliberately unavailable without a configured worker.
+
+## Frontend development
+
+The UI uses React, TypeScript, shadcn/ui (Radix), Tailwind CSS, and Recharts. UI source lives in `frontend/`; the Python API serves the built assets from the same origin.
+
+Use Node 22.12+ (Node 24 recommended). Before serving or deploying:
+
+```sh
+npm ci --prefix frontend
+npm run build --prefix frontend
+uv run neural-amp-modeler serve
+```
+
+The build writes hashed assets to `src/nam_studio/static/`, which is generated and ignored by Git. For hot reload, keep the Python server running and run `npm run dev --prefix frontend` in another terminal. Open the printed Vite URL; API and live monitoring requests proxy to port 8000. URLs preserve the selected pair, run, and panel.
 
 ## Modal
 
@@ -128,6 +142,8 @@ The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp si
 The private workspace key is `NAM_STUDIO_KEY` in `.env` and the `neural-amp-modeler-auth` Modal Secret, never in Git. For a new deployment, provision that secret with `uv run modal secret create neural-amp-modeler-auth --from-dotenv .env`. Deploy when recording/training are idle:
 
 ```sh
+npm ci --prefix frontend
+npm run build --prefix frontend
 uv run modal deploy --strategy recreate modal_app.py
 ```
 
@@ -138,6 +154,8 @@ Reconnect the live bridge after deployment. Captures, `.env`, and scratch experi
 ## Checks
 
 ```sh
+npm run lint --prefix frontend
+npm run build --prefix frontend
 uv run --extra capture pytest -q
 node --test tests/test_*.cjs
 ```

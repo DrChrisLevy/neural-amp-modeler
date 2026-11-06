@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const sandbox = {window: {}, AbortController};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/nam_studio/static/comparison-player.js'), 'utf8'), sandbox);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../frontend/src/lib/engines/comparison-audio.js'), 'utf8'), sandbox);
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
 function setup(fetcher) {
   const context = {

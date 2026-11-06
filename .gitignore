@@ -26,3 +26,8 @@ outputs/
 *.ckpt
 *.pt
 *.pth
+
+# Frontend dependencies and compiled assets
+node_modules/
+src/nam_studio/static/
+*.tsbuildinfo
