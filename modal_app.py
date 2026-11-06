@@ -19,7 +19,7 @@ web_image = (
 training_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("libsndfile1", "libportaudio2", "python3-tk")
-    .pip_install("neural-amp-modeler==0.13.0", "pytorch-lightning<=2.6.1", "soundfile>=0.13,<1")
+    .pip_install("neural-amp-modeler==0.13.0", "torch==2.15.0", "pytorch-lightning==2.6.1", "numpy==2.5.4", "soundfile>=0.13,<1")
     .env({"MPLBACKEND": "Agg"})
     .run_commands("python -c 'import nam, tkinter, soundfile; from nam.train.lightning_module import LightningModule'")
     .add_local_dir(package, "/root/nam_studio", ignore=["__pycache__", "*.pyc", "static"])
@@ -34,7 +34,7 @@ with training_image.imports():
     from nam_studio.training_runtime import ValidatedLightningModule
 
 
-@app.function(image=training_image, gpu=["H100", "A10G"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, min_containers=0, scaledown_window=1200, enable_memory_snapshot=True)
+@app.function(image=training_image, gpu=["RTX-PRO-6000", "H100"], cpu=4, memory=16384, volumes={"/data": data}, timeout=3600, min_containers=0, scaledown_window=120, enable_memory_snapshot=True)
 def train(job_id: str | None = None):
     from nam_studio.training import train_job
 
