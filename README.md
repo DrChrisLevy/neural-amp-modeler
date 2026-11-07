@@ -137,7 +137,7 @@ The build writes hashed assets to `src/nam_studio/static/`, which is generated a
 
 ## Modal
 
-`modal_app.py` defines a web function and an isolated H100/A10G training worker. The GPU scales to zero after 20 idle minutes; web idle timeout is two minutes. Idle GPU time is billable. Live recording warms the GPU; local WAV capture currently does not. Web concurrency is target 16 / maximum 64, with one web container owning the live bridge, so sticky sessions are unnecessary. Recordings and models persist in the `neural-amp-modeler-data` Volume.
+`modal_app.py` defines a web function and an isolated training worker that prefers RTX PRO 6000, with H100 as a capacity fallback. Both the GPU worker and web container have a two-minute idle timeout. Idle GPU time is billable. Live recording warms the GPU; local WAV capture currently does not. Web concurrency is target 16 / maximum 64, with one web container owning the live bridge, so sticky sessions are unnecessary. Recordings and models persist in the `neural-amp-modeler-data` Volume.
 
 The private workspace key is `NAM_STUDIO_KEY` in `.env` and the `neural-amp-modeler-auth` Modal Secret, never in Git. For a new deployment, provision that secret with `uv run modal secret create neural-amp-modeler-auth --from-dotenv .env`. Deploy when recording/training are idle:
 
