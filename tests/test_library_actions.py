@@ -32,7 +32,7 @@ def test_downloads_use_parent_pair_name_and_keep_audio_playable(tmp_path, name, 
         c.post('/api/captures/upload', files=files(), data={'name': 'Another pair'})
         job_id = 'f' * 32
         job_path = app.state.store.path('jobs', job_id)
-        atomic_json(job_path / 'status.json', {'id': job_id, 'capture_id': take['id'], 'name': 'Old name', 'status': 'completed', 'epochs': epochs})
+        atomic_json(job_path / 'status.json', {'id': job_id, 'capture_id': take['id'], 'name': 'Old name', 'model_size': 'full', 'status': 'completed', 'epochs': epochs})
         (job_path / 'model.nam').write_text('{}')
         model_url = c.get('/api/state').json()['jobs'][0]['model_url']
         for url, suffix in [(model_url, f'_{epochs}_epochs.nam'), (take['dry_url'], '_dry.wav'), (take['wet_url'], '_wet.wav')]:
@@ -53,7 +53,7 @@ def test_delete_cascades_runs_and_revokes_cached_downloads(tmp_path):
         other = c.post('/api/captures/upload', files=files(), data={'name':'Keep'}).json()
         job_id = 'a' * 32
         job_path = app.state.store.path('jobs', job_id)
-        atomic_json(job_path / 'status.json', {'id':job_id,'capture_id':first['id'],'status':'completed','created_at':'2026-11-06'})
+        atomic_json(job_path / 'status.json', {'id':job_id,'capture_id':first['id'],'model_size':'full','status':'completed','created_at':'2026-11-06'})
         (job_path / 'model.nam').write_text('{}')
         state = c.get('/api/state').json()
         model_url = state['jobs'][0]['model_url']
@@ -74,10 +74,34 @@ def test_delete_refuses_active_jobs(tmp_path, status):
     with TestClient(app) as c:
         take = c.post('/api/captures/upload',files=files()).json()
         job_id = 'b' * 32
-        atomic_json(app.state.store.path('jobs',job_id)/'status.json', {'id':job_id,'capture_id':take['id'],'status':status})
+        atomic_json(app.state.store.path('jobs',job_id)/'status.json', {'id':job_id,'capture_id':take['id'],'model_size':'full','status':status})
         assert c.delete(f"/api/captures/{take['id']}").status_code == 409
         assert app.state.store.path('captures',take['id']).exists()
         assert app.state.store.path('jobs',job_id).exists()
+
+
+def test_library_only_shows_full_runs_without_deleting_saved_artifacts(tmp_path):
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        take = client.post('/api/captures/upload', files=files()).json()
+        paths = []
+        for model_size, prefix in [('full', 'a'), ('lite', 'b'), ('both', 'c')]:
+            job_id = prefix * 32
+            folder = app.state.store.path('jobs', job_id)
+            atomic_json(folder / 'status.json', {
+                'id': job_id, 'capture_id': take['id'], 'model_size': model_size,
+                'status': 'completed', 'epochs': 400,
+            })
+            model = folder / 'model.nam'
+            model.write_text('{}')
+            paths.append(model)
+        state = client.get('/api/state').json()
+        assert [job['id'] for job in state['jobs']] == ['a' * 32]
+        assert client.get(state['jobs'][0]['model_url']).content == b'{}'
+        assert all(path.read_text() == '{}' for path in paths)
+        # Removing the parent pair must still clean up its hidden historical runs.
+        assert client.delete(f"/api/captures/{take['id']}").status_code == 200
+        assert not any(path.exists() for path in paths)
 
 
 def test_delete_rejects_invalid_ids_and_missing_rows(tmp_path):

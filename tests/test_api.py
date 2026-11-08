@@ -73,14 +73,14 @@ def test_rejects_mismatched_and_multichannel_uploads(tmp_path):
     assert client.get("/api/state").json()["captures"] == []
 
 
-def test_training_dispatch_allows_independent_runs(tmp_path):
+def test_training_dispatch_allows_independent_runs(tmp_path, pair_files):
     submitted = []
 
     async def submit(job_id):
         submitted.append(job_id)
 
     client = TestClient(create_app(tmp_path, submit=submit))
-    take = client.post("/api/demo").json()
+    take = client.post("/api/captures/upload", files=pair_files).json()
     response = client.post("/api/train", json={"capture_id": take["id"], "epochs": 50, "model_size": "full"})
     assert response.status_code == 200
     assert submitted == [response.json()["id"]]
@@ -94,14 +94,14 @@ def test_training_dispatch_allows_independent_runs(tmp_path):
     assert all(job["status"] == "queued" for job in client.get("/api/state").json()["jobs"])
 
 
-def test_new_runs_reject_lite_and_packed_without_dispatching(tmp_path):
+def test_new_runs_reject_unsupported_models_without_dispatching(tmp_path, pair_files):
     submitted = []
 
     async def submit(job_id):
         submitted.append(job_id)
 
     client = TestClient(create_app(tmp_path, submit=submit))
-    take = client.post("/api/demo").json()
+    take = client.post("/api/captures/upload", files=pair_files).json()
     for size in ("lite", "both", "unknown"):
         response = client.post("/api/train", json={"capture_id": take["id"], "model_size": size})
         assert response.status_code == 400
@@ -110,10 +110,16 @@ def test_new_runs_reject_lite_and_packed_without_dispatching(tmp_path):
     assert client.get("/api/state").json()["jobs"] == []
 
 
-def test_local_mode_does_not_fake_training(tmp_path):
+def test_local_mode_does_not_fake_training(tmp_path, pair_files):
     client = TestClient(create_app(tmp_path))
-    take = client.post("/api/demo").json()
+    take = client.post("/api/captures/upload", files=pair_files).json()
     assert client.post("/api/train", json={"capture_id": take["id"]}).status_code == 503
+
+
+def test_demo_endpoint_is_not_available(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.post("/api/demo").status_code == 404
+        assert client.get("/api/state").json()["captures"] == []
 
 
 def test_extended_epoch_choices_and_full_default(tmp_path):

@@ -148,7 +148,9 @@ def create_app(root: str | Path | None = None, *, volume=None, submit=None, warm
         await catalog.get()
         result = {"revision": catalog.revision, "bridge": dict(bridge)}
         if revision != catalog.revision:
-            result.update(captures=catalog.captures, jobs=catalog.jobs)
+            # Keep unsupported historical artifacts on disk, outside the Full-only UI.
+            result.update(captures=catalog.captures,
+                          jobs=[job for job in catalog.jobs if job.get("model_size") == "full"])
         return JSONResponse(result)
 
     async def broadcast(payload):
@@ -340,16 +342,6 @@ def create_app(root: str | Path | None = None, *, volume=None, submit=None, warm
             await commit_store()
             catalog.remove_capture(capture_id)
         return {"deleted": capture_id}
-
-    @studio.post("/api/demo")
-    async def demo():
-        rng = np.random.default_rng(42)
-        t = np.arange(SAMPLE_RATE * 16) / SAMPLE_RATE
-        phase = 2 * np.pi * np.cumsum(np.repeat([110, 146.83, 164.81, 130.81], SAMPLE_RATE * 4)) / SAMPLE_RATE
-        envelope = np.exp(-3 * (t % 0.5))
-        dry = (0.11 * np.sin(phase) + 0.04 * np.sin(2 * phase) + 0.02 * rng.normal(size=len(t))) * envelope
-        wet = np.tanh(dry * 4) * 0.6
-        return await persist(save_capture(dry.astype("float32"), wet.astype("float32"), "Demo · synthetic plucks", "demo"))
 
     @studio.post("/api/train")
     async def train(body: TrainCommand):

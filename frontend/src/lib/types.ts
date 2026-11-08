@@ -25,7 +25,7 @@ export type Job = {
   status: "queued" | "training" | "completed" | "failed"
   stage?: string
   name?: string
-  model_size: "full" | "lite" | "both"
+  model_size: "full"
   epochs: number
   epoch?: number
   progress?: number

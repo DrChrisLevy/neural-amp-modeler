@@ -15,9 +15,8 @@ from nam_studio.training import (
     ALIGNMENT_HEADROOM,
     SAMPLE_RATE,
     _LossHistory,
-    _select_model_config,
+    _full_model_config,
     _write_audition,
-    align_pair,
     analyze_audio,
     estimate_delay,
     split_segments,
@@ -89,8 +88,6 @@ class AlignmentTests(unittest.TestCase):
                 result = estimate_delay(x, wet)
                 self.assertEqual(result["estimated_delay_samples"], lag)
                 self.assertEqual(result["applied_delay_samples"], lag - ALIGNMENT_HEADROOM)
-                aligned_x, aligned_y = align_pair(x, wet, lag)
-                np.testing.assert_allclose(aligned_y, -0.4 * np.tanh(4 * aligned_x), atol=1e-7)
 
     def test_alignment_rejects_unrelated_audio(self):
         rng = np.random.default_rng(12)
@@ -157,7 +154,7 @@ class QualityTests(unittest.TestCase):
             dry = np.full(1000, 0.1)
             reference = np.full(1000, 0.4)
             prediction = np.full(1000, 2.0)
-            gain = _write_audition(directory, dry, reference, {"lite": prediction}, "lite")
+            gain = _write_audition(directory, dry, reference, prediction)
             self.assertAlmostEqual(gain, 0.475)
             for name, expected in [("dry", 0.1), ("reference", 0.4), ("prediction", 2.0)]:
                 audio, rate = sf.read(directory / f"{name}.wav")
@@ -177,7 +174,7 @@ class QualityTests(unittest.TestCase):
                 sf.write(capture / f"{name}.wav", zeros, SAMPLE_RATE, subtype="PCM_24")
             (job / "status.json").write_text(json.dumps({
                 "id": "job-test", "capture_id": "capture-test", "epochs": 10,
-                "model_size": "lite", "status": "queued", "created_at": "test",
+                "model_size": "full", "status": "queued", "created_at": "test",
             }))
             commits = []
             with self.assertRaisesRegex(ValueError, "silent"):
@@ -189,7 +186,20 @@ class QualityTests(unittest.TestCase):
 
 
 class RecipeTests(unittest.TestCase):
-    def test_single_model_keeps_training_recipe(self):
+    def test_worker_rejects_unsupported_models_before_loading_audio_or_gpu(self):
+        for model_size in ("lite", "both", "unknown"):
+            with self.subTest(model_size=model_size), tempfile.TemporaryDirectory() as path:
+                status_path = Path(path) / "jobs" / "job-test" / "status.json"
+                status_path.parent.mkdir(parents=True)
+                status_path.write_text(json.dumps({
+                    "id": "job-test", "capture_id": "capture-test", "epochs": 10,
+                    "model_size": model_size, "status": "queued",
+                }))
+                with self.assertRaisesRegex(ValueError, "A2 Full only"):
+                    train_job(path, "job-test")
+                self.assertEqual(json.loads(status_path.read_text())["status"], "failed")
+
+    def test_full_model_keeps_training_recipe(self):
         recipe = {
             "net": {"name": "PackedWaveNet", "config": {"submodels": [
                 {"config": {"layers_configs": [{"channels": 3}], "head_scale": 0.01}},
@@ -198,12 +208,11 @@ class RecipeTests(unittest.TestCase):
             "loss": {"val_loss": "esr", "mrstft_weight": 0.0005},
             "optimizer": {"lr": 0.004},
         }
-        for label, width in [("lite", 3), ("full", 8)]:
-            selected = _select_model_config(recipe, label)
-            self.assertEqual(selected["net"]["name"], "WaveNet")
-            self.assertEqual(selected["net"]["config"]["layers_configs"][0]["channels"], width)
-            self.assertEqual(selected["loss"], recipe["loss"])
-            self.assertEqual(selected["optimizer"], recipe["optimizer"])
+        selected = _full_model_config(recipe)
+        self.assertEqual(selected["net"]["name"], "WaveNet")
+        self.assertEqual(selected["net"]["config"]["layers_configs"][0]["channels"], 8)
+        self.assertEqual(selected["loss"], recipe["loss"])
+        self.assertEqual(selected["optimizer"], recipe["optimizer"])
         self.assertEqual(recipe["net"]["name"], "PackedWaveNet")
 
 

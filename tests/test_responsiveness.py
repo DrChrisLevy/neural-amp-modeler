@@ -66,13 +66,13 @@ def test_initial_scan_is_shared_and_does_not_block_other_requests(tmp_path, monk
     asyncio.run(run())
 
 
-def test_live_progress_refresh_is_nonblocking_and_completion_keeps_curves(tmp_path, monkeypatch):
+def test_live_progress_refresh_is_nonblocking_and_completion_keeps_curves(tmp_path, monkeypatch, pair_files):
     async def run():
         async with studio(tmp_path) as (app, client):
-            take = (await client.post("/api/demo")).json()
+            take = (await client.post("/api/captures/upload", files=pair_files)).json()
             job_id = "a" * 32
             path = app.state.store.path("jobs", job_id) / "status.json"
-            job = {"id": job_id, "capture_id": take["id"], "status": "training", "epoch": 1, "metrics": [{"epoch": 1, "loss": 0.4}]}
+            job = {"id": job_id, "capture_id": take["id"], "model_size": "full", "status": "training", "epoch": 1, "metrics": [{"epoch": 1, "loss": 0.4}]}
             atomic_json(path, job)
             initial = (await client.get("/api/state")).json()
             app.state.catalog.active_interval = 0
@@ -147,10 +147,10 @@ def test_slow_upload_does_not_block_controls_and_survives_disconnect(tmp_path, m
     asyncio.run(run())
 
 
-def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatch):
+def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatch, pair_files):
     async def run():
         async with studio(tmp_path) as (app, client):
-            take = (await client.post("/api/demo")).json()
+            take = (await client.post("/api/captures/upload", files=pair_files)).json()
             await client.get("/api/state")
             source = app.state.store.path("captures", take["id"]) / "dry.wav"
             expected = source.read_bytes()
@@ -184,7 +184,7 @@ def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatc
     asyncio.run(run())
 
 
-def test_training_dispatch_allows_parallel_runs_without_blocking_controls(tmp_path):
+def test_training_dispatch_allows_parallel_runs_without_blocking_controls(tmp_path, pair_files):
     async def run():
         started, both_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         submitted = []
@@ -197,7 +197,7 @@ def test_training_dispatch_allows_parallel_runs_without_blocking_controls(tmp_pa
             await release.wait()
 
         async with studio(tmp_path, submit=submit) as (app, client):
-            take = (await client.post("/api/demo")).json()
+            take = (await client.post("/api/captures/upload", files=pair_files)).json()
             await client.get("/api/state")
             first = asyncio.create_task(client.post("/api/train", json={"capture_id": take["id"]}))
             second = None

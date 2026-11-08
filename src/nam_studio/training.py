@@ -173,19 +173,6 @@ def estimate_delay(dry: Any, wet: Any, max_lag: int = MAX_ALIGNMENT_SAMPLES) -> 
     }
 
 
-def align_pair(dry: Any, wet: Any, delay: int):
-    """Positive delay means wet lags: discard wet's start and dry's end."""
-    if len(dry) != len(wet):
-        raise ValueError("Dry and wet recordings must contain the same number of samples")
-    if abs(delay) >= len(dry):
-        raise ValueError("Alignment delay is longer than the recording")
-    if delay > 0:
-        return dry[:-delay], wet[delay:]
-    if delay < 0:
-        return dry[-delay:], wet[:delay]
-    return dry, wet
-
-
 def is_standard_input(dry) -> bool:
     """Recognize v3 by sample content, even after a WAV header is rewritten."""
     import numpy as np
@@ -260,16 +247,12 @@ def split_segments(length: int, receptive_field: int, *, standard=False) -> dict
     }
 
 
-def _select_model_config(recipe: dict[str, Any], model_size: str) -> dict[str, Any]:
+def _full_model_config(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Extract A2 Full from NAM's bundled training recipe."""
     result = copy.deepcopy(recipe)
-    if model_size == "both":
-        return result
-    if model_size not in {"lite", "full"}:
-        raise ValueError("Model size must be lite, full, or both")
-    width = 3 if model_size == "lite" else 8
     matches = [
         sub for sub in recipe["net"]["config"]["submodels"]
-        if sub["config"]["layers_configs"][0]["channels"] == width
+        if sub["config"]["layers_configs"][0]["channels"] == 8
     ]
     if len(matches) != 1:
         raise RuntimeError("Installed NAM A2 recipe does not match the expected architecture")
@@ -295,19 +278,18 @@ def _render(net, dry, start: int, stop: int):
     return np.concatenate(outputs, axis=-1)
 
 
-def _write_audition(directory: Path, dry, reference, predictions: dict[str, Any], selected: str) -> float:
+def _write_audition(directory: Path, dry, reference, prediction) -> float:
     """Apply one shared safety gain so A/B levels and differences stay honest."""
     import numpy as np
     import soundfile as sf
 
-    signals = {"dry": dry, "reference": reference, **{f"prediction_{k}": v for k, v in predictions.items()}}
+    signals = {"dry": dry, "reference": reference, "prediction": prediction}
     if any(not np.isfinite(a).all() for a in signals.values()):
         raise RuntimeError("Cannot export non-finite audio")
     peak = max(float(np.max(np.abs(a))) for a in signals.values())
     gain = min(1.0, 0.95 / max(peak, 1e-12))
     for name, audio in signals.items():
         sf.write(directory / f"{name}.wav", audio * gain, SAMPLE_RATE, subtype="PCM_24")
-    sf.write(directory / "prediction.wav", predictions[selected] * gain, SAMPLE_RATE, subtype="PCM_24")
     return gain
 
 
@@ -346,9 +328,8 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         epochs = int(status["epochs"])
         if not 10 <= epochs <= 1000:
             raise ValueError("Training epochs must be between 10 and 1000")
-        size = status["model_size"]
-        if size not in {"lite", "full", "both"}:
-            raise ValueError("Model size must be lite, full, or both")
+        if status["model_size"] != "full":
+            raise ValueError("Training supports A2 Full only")
         capture = Path(root) / "captures" / _identifier(status["capture_id"])
         metadata = json.loads((capture / "meta.json").read_text())
         update(status="training", stage="preparing", started_at=_now(), epoch=0, progress=0.01,
@@ -389,8 +370,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         import torch
         import pytorch_lightning as pl
         from torch.utils.data import DataLoader
-        from nam.train.lightning_module import PackedMaskCallback
-        from .training_runtime import TrainingBatches, ValidationChunks, ValidatedLightningModule, ValidatedPackedLightningModule, prepare_datasets
+        from .training_runtime import TrainingBatches, ValidationChunks, ValidatedLightningModule, prepare_datasets
 
         installed = importlib.metadata.version("neural-amp-modeler")
         if installed != NAM_VERSION:
@@ -404,12 +384,10 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         # The startup cost is amortized over the repeated training-window shapes.
         torch.backends.cudnn.benchmark = True
         recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
-        config = _select_model_config(recipe, size)
+        config = _full_model_config(recipe)
         # Same Adam update, with the many small parameter operations fused on CUDA.
         config["optimizer"]["fused"] = True
-        is_packed = size == "both"
-        model_class = ValidatedPackedLightningModule if is_packed else ValidatedLightningModule
-        model = model_class.init_from_config(config)
+        model = ValidatedLightningModule.init_from_config(config)
         model.net.sample_rate = SAMPLE_RATE
         receptive_field = int(model.net.receptive_field)
         split = split_segments(len(dry), receptive_field, standard=standard)
@@ -465,7 +443,6 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                 # One device synchronization per UI update, not one per batch.
                 values = torch.stack([item[2] for item in self.pending]).cpu().tolist()
                 for (step, epoch, _, examples), value in zip(self.pending, values):
-                    value /= 2 if is_packed else 1
                     if not math.isfinite(value):
                         raise RuntimeError("Training loss became non-finite")
                     self.history.append({"step": step, "epoch": epoch, "loss": value})
@@ -495,7 +472,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
                 value = trainer.callback_metrics.get("val_loss")
                 if value is None:
                     raise RuntimeError("NAM did not report a validation loss")
-                loss = float(value.detach().cpu()) / (2 if is_packed else 1)
+                loss = float(value.detach().cpu())
                 if not math.isfinite(loss):
                     raise RuntimeError("Validation loss became non-finite")
                 epoch = int(trainer.current_epoch) + 1
@@ -511,8 +488,6 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         checkpoint_temp = tempfile.TemporaryDirectory(prefix="neural-amp-modeler-checkpoints-")
         checkpoint = pl.callbacks.ModelCheckpoint(dirpath=checkpoint_temp.name, filename="best", monitor="val_loss", mode="min", save_top_k=1)
         callbacks = [Progress(), checkpoint]
-        if is_packed:
-            callbacks.append(PackedMaskCallback())
         trainer = pl.Trainer(
             accelerator="gpu", devices=1, max_epochs=epochs,
             precision="32-true", callbacks=callbacks, default_root_dir=directory,
@@ -532,7 +507,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
             checkpoint_temp.cleanup()
         update(stage="exporting", progress=0.92)
         phase_started = time.monotonic()
-        best = model_class.load_from_checkpoint(saved_checkpoint, map_location="cpu", **model_class.parse_config(config))
+        best = ValidatedLightningModule.load_from_checkpoint(saved_checkpoint, map_location="cpu", **ValidatedLightningModule.parse_config(config))
         best.net.sample_rate = SAMPLE_RATE
         # Dataset export hooks are not checkpoint weights. Reattach the official
         # gain compensation to the selected model before exporting its .nam.
@@ -541,19 +516,14 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         best.eval().cuda()
         start = receptive_field - 1
         validation_dry = validation.x.numpy()
-        output = _render(best.net, validation_dry, start, len(validation_dry)) / normalization_gain
-        predictions = {"lite": output[0], "full": output[1]} if is_packed else {size: output}
+        prediction = _render(best.net, validation_dry, start, len(validation_dry)) / normalization_gain
         reference = validation.y.numpy()[start:] / normalization_gain
         if float(np.mean(np.square(reference, dtype=np.float64))) < 1e-10:
             raise ValueError("The held-out end of the capture is silent; finish with varied guitar playing")
-        esrs = {
-            key: float(np.sum(np.square(pred - reference, dtype=np.float64)) / np.sum(np.square(reference, dtype=np.float64)))
-            for key, pred in predictions.items()
-        }
-        if not all(math.isfinite(value) for value in esrs.values()):
+        esr = float(np.sum(np.square(prediction - reference, dtype=np.float64)) / np.sum(np.square(reference, dtype=np.float64)))
+        if not math.isfinite(esr):
             raise RuntimeError("Model produced non-finite validation metrics")
-        selected = "full" if is_packed else size
-        audition_gain = _write_audition(directory, validation_dry[start:], reference, predictions, selected)
+        audition_gain = _write_audition(directory, validation_dry[start:], reference, prediction)
         with torch.inference_mode():
             best.net.export(directory, basename="model_pending", other_metadata={"name": f"Neural Amp Modeler {job_id}", "capture_id": status["capture_id"]})
         # Invalid model numbers must never become a downloadable successful run.
@@ -565,8 +535,7 @@ def train_job(root: str, job_id: str, commit: Callable[[], Any] | None = None) -
         phase_done("render_and_export", phase_started)
         update(
             status="completed", stage="completed", completed_at=_now(), epoch=epochs,
-            progress=1.0, loss=esrs[selected], esr=esrs[selected], esr_by_model=esrs,
-            comparison_model=selected, audition_gain=audition_gain,
+            progress=1.0, loss=esr, esr=esr, audition_gain=audition_gain,
             comparison_seconds=len(reference) / SAMPLE_RATE,
             total_seconds=round(time.monotonic() - job_started, 2),
             timings_seconds=timings.copy(),

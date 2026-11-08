@@ -7,7 +7,7 @@ import json
 try:
     import torch
     from nam_studio.training_runtime import TrainingBatches, ValidationChunks, _WholeRecordingValidation, ValidatedLightningModule, prepare_datasets
-    from nam_studio.training import _select_model_config, split_segments, calibrate_standard_delay
+    from nam_studio.training import _full_model_config, split_segments, calibrate_standard_delay
     from nam.data import Dataset
 except ModuleNotFoundError as exc:
     if exc.name not in {"torch", "nam"}:
@@ -16,15 +16,14 @@ except ModuleNotFoundError as exc:
 
 
 class ValidationHarness(_WholeRecordingValidation, torch.nn.Module):
-    def __init__(self, context=6, packed=False):
+    def __init__(self, context=6):
         super().__init__()
-        self.context, self.packed = context, packed
+        self.context = context
         self.device = torch.device("cpu")
         self.metrics = {}
 
     def forward(self, dry, pad_start=False):
-        prediction = dry[:, self.context:] + 0.01
-        return torch.stack((prediction, prediction * 2), dim=1) if self.packed else prediction
+        return dry[:, self.context:] + 0.01
 
     def log(self, name, value, **kwargs):
         self.metrics[name] = value.item()
@@ -75,7 +74,7 @@ class ValidationRegressionTests(unittest.TestCase):
     def test_export_hook_compensates_training_gain_exactly_once(self):
         import numpy as np
         recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
-        net = ValidatedLightningModule.init_from_config(_select_model_config(recipe, "lite")).net
+        net = ValidatedLightningModule.init_from_config(_full_model_config(recipe)).net
         net.sample_rate = 48000
         dry = np.sin(np.arange(48000 * 12) * .017).astype("float32") * .1
         train, val, gain = prepare_datasets(dry, dry * .2, split_segments(len(dry), net.receptive_field), net.receptive_field, 0)
@@ -136,19 +135,6 @@ class ValidationRegressionTests(unittest.TestCase):
             model.on_validation_epoch_end()
             self.assertAlmostEqual(model.metrics["val_loss"], expected, places=7)
 
-    def test_packed_metric_sums_the_two_whole_recording_errors(self):
-        target = torch.linspace(-0.2, 0.2, 111)
-        model = ValidationHarness(packed=True)
-        chunks = ValidationChunks(target, target, 7, 32)
-        model.on_validation_epoch_start()
-        for i in range(len(chunks)):
-            model.validation_step(chunks[i], i)
-        model.on_validation_epoch_end()
-        prediction = torch.stack((target[6:] + 0.01, (target[6:] + 0.01) * 2))
-        expected = ((prediction - target[6:]).double().square().sum()
-                    / target[6:].double().square().sum()).item()
-        self.assertAlmostEqual(model.metrics["val_loss"], expected, places=6)
-
     def test_silent_validation_fails_instead_of_selecting_a_checkpoint(self):
         model = ValidationHarness()
         model.on_validation_epoch_start()
@@ -162,7 +148,7 @@ class GraphRegressionTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "Requires CUDA")
     def test_graph_matches_eager_loss_and_gradients_across_changed_inputs(self):
         recipe = json.loads(importlib.resources.files("nam.train._resources").joinpath("config_model_packed.json").read_text())
-        config = _select_model_config(recipe, "lite")
+        config = _full_model_config(recipe)
         eager = ValidatedLightningModule.init_from_config(config).cuda()
         graphed = ValidatedLightningModule.init_from_config(config).cuda()
         graphed.load_state_dict(eager.state_dict())

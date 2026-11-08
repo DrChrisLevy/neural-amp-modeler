@@ -44,7 +44,6 @@ import {
   date,
   downloadUrl,
   metric,
-  modelName,
   percent,
 } from "@/lib/studio"
 import type { Capture, Job, Upload } from "@/lib/types"
@@ -415,7 +414,7 @@ export function Library({ studio, onAdd, onOpen, onTrain, onDelete }: Props) {
                         <div className="space-y-1.5">
                           <StatusBadge job={current} />
                           <div className="text-[11px] text-muted-foreground">
-                            {modelName(current)} ·{" "}
+                            A2 Full ·{" "}
                             {current.epochs.toLocaleString()} epochs
                           </div>
                           <button
@@ -500,7 +499,7 @@ export function Library({ studio, onAdd, onOpen, onTrain, onDelete }: Props) {
                                   className="text-left hover:text-primary"
                                 >
                                   <span className="text-xs font-medium">
-                                    {modelName(run)}
+                                    A2 Full
                                     <span className="ml-2 text-muted-foreground">
                                       {run.epochs.toLocaleString()} epochs
                                     </span>
@@ -535,9 +534,7 @@ export function Library({ studio, onAdd, onOpen, onTrain, onDelete }: Props) {
                                           href={downloadUrl(run.model_url)}
                                           download
                                           aria-label={
-                                            "Download " +
-                                            modelName(run) +
-                                            " " +
+                                            "Download A2 Full " +
                                             run.epochs +
                                             " epochs for " +
                                             take.name

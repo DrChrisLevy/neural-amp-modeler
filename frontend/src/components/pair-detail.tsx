@@ -35,7 +35,6 @@ import {
   date,
   downloadUrl,
   metric,
-  modelName,
   percent,
 } from "@/lib/studio"
 import type { Capture, Job, Point } from "@/lib/types"
@@ -189,7 +188,6 @@ function Training({ job, onTrain }: { job?: Job; onTrain: () => void }) {
       </div>
     )
   const training = window.NAMLossChart.trainingSeries(job)
-  const combined = job.model_size === "both"
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -234,7 +232,7 @@ function Training({ job, onTrain }: { job?: Job; onTrain: () => void }) {
             <div className="mt-3 font-mono text-2xl tracking-tight">
               {job.elapsed_seconds != null ? clock(job.elapsed_seconds) : "—"}
               <span className="ml-3 font-sans text-[11px] text-muted-foreground">
-                {modelName(job)} model
+                A2 Full model
               </span>
             </div>
           </CardContent>
@@ -303,9 +301,7 @@ function Training({ job, onTrain }: { job?: Job; onTrain: () => void }) {
         />
       </div>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        {combined
-          ? "This older run trained Full + Lite together. These curves show their average; audio comparison and the download use Full."
-          : "Lower is better. Training loss and validation ESR use separate scales."}
+        Lower is better. Training loss and validation ESR use separate scales.
       </p>
     </div>
   )
@@ -385,7 +381,7 @@ export function PairDetail({
             <SelectContent>
               {jobs.map((job) => (
                 <SelectItem key={job.id} value={job.id}>
-                  {modelName(job)} · {job.epochs.toLocaleString()} epochs ·{" "}
+                  A2 Full · {job.epochs.toLocaleString()} epochs ·{" "}
                   {date(job.created_at, true)}
                 </SelectItem>
               ))}

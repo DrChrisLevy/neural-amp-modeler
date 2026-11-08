@@ -44,12 +44,6 @@ export const downloadUrl = (url: string) =>
   url + (url.includes("?") ? "&" : "?") + "download=1&v=2"
 export const active = (job: Job) =>
   job.status === "queued" || job.status === "training"
-export const modelName = (job: Job) =>
-  job.model_size === "both"
-    ? "Full + Lite"
-    : job.model_size === "lite"
-      ? "Lite"
-      : "Full"
 export const percent = (job: Job) =>
   Math.round(Math.max(0, Math.min(1, job.progress || 0)) * 100)
 export const metric = (value?: number) => window.NAMLossChart.format(value)

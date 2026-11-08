@@ -3,7 +3,7 @@
 import math
 
 import torch
-from nam.train.lightning_module import LightningModule, PackedLightningModule
+from nam.train.lightning_module import LightningModule
 from nam.data import Dataset as NAMDataset, NormalizeJointDatasetOutput
 from torch.utils.data import Dataset, IterableDataset
 
@@ -65,7 +65,7 @@ class _TrainingObjective(torch.nn.Module):
 class _GraphedTraining:
     """Replay NAM's forward/loss/backward kernels without a compile cold start.
 
-    Optimizer, clipping, scheduler, packed masks, and checkpoint format remain
+    Optimizer, clipping, scheduler, and checkpoint format remain
     under Lightning/NAM. A separate graph covers the final smaller batch.
     """
 
@@ -122,7 +122,6 @@ class _WholeRecordingValidation:
 
     NAM's training loss remains untouched. Validation only needs the metric used
     to select checkpoints, so it also avoids computing unused spectral losses.
-    The packed model retains NAM's summed metric convention.
     """
 
     def on_validation_epoch_start(self):
@@ -132,9 +131,7 @@ class _WholeRecordingValidation:
     def validation_step(self, batch, batch_idx):
         dry, target = batch
         prediction = self(dry, pad_start=False)
-        if prediction.ndim == 2:
-            prediction = prediction.unsqueeze(1)
-        error = (prediction - target.unsqueeze(1)).square().sum(dim=(0, 2), dtype=torch.float64)
+        error = (prediction - target).square().sum(dtype=torch.float64)
         self._validation_error = error if self._validation_error is None else self._validation_error + error
         self._validation_reference += target.square().sum(dtype=torch.float64)
 
@@ -144,12 +141,8 @@ class _WholeRecordingValidation:
         esr = self._validation_error / self._validation_reference
         if not torch.isfinite(esr).all().item():
             raise RuntimeError("Model produced non-finite validation metrics")
-        self.log("val_loss", esr.sum(), on_step=False, on_epoch=True, batch_size=1)
+        self.log("val_loss", esr, on_step=False, on_epoch=True, batch_size=1)
 
 
 class ValidatedLightningModule(_GraphedTraining, _WholeRecordingValidation, LightningModule):
-    pass
-
-
-class ValidatedPackedLightningModule(_GraphedTraining, _WholeRecordingValidation, PackedLightningModule):
     pass
