@@ -6,14 +6,28 @@ import modal
 
 app = modal.App("neural-amp-modeler")
 data = modal.Volume.from_name("neural-amp-modeler-data", create_if_missing=True, version=2)
-package = Path(__file__).parent / "src" / "nam_studio"
+project = Path(__file__).parent
+package = project / "src" / "nam_studio"
+frontend = project / "frontend"
 
 web_image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.from_registry("node:24-bookworm-slim", add_python="3.12")
     .apt_install("libsndfile1")
     .pip_install("fastapi==0.162.0", "numpy==2.5.4", "soundfile==0.14.0", "python-multipart==0.0.33", "uvicorn==0.54.0")
     .env({"NAM_STUDIO_DATA": "/data"})
-    .add_local_dir(package, "/root/nam_studio", ignore=["__pycache__", "*.pyc"])
+    # Cache dependencies separately so source edits only rebuild the frontend.
+    .add_local_file(frontend / "package.json", "/root/frontend/package.json", copy=True)
+    .add_local_file(frontend / "package-lock.json", "/root/frontend/package-lock.json", copy=True)
+    .run_commands("npm ci --prefix /root/frontend --no-audit --no-fund")
+    .add_local_dir(
+        frontend,
+        "/root/frontend",
+        copy=True,
+        ignore=["node_modules", "dist", "dist-ssr", "*.tsbuildinfo", ".env*", "*.local", "*.log"],
+    )
+    .run_commands("npm run build --prefix /root/frontend -- --outDir /root/nam_studio/static")
+    # Copy Python source into the image without replacing its cloud-built assets.
+    .add_local_dir(package, "/root/nam_studio", copy=True, ignore=["__pycache__", "*.pyc", "static"])
 )
 training_image = (
     modal.Image.debian_slim(python_version="3.12")

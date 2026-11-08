@@ -4,7 +4,7 @@ React, TypeScript, and shadcn/ui. See the [root README](../README.md#run-your-ow
 
 ## Local development
 
-Use Node.js 22.12+ (24 recommended). From the repository root:
+Node.js is only needed for local UI development; Modal builds the frontend automatically during deployment. For local development, use Node.js 22.12+ (24 recommended). From the repository root:
 
 ```sh
 uv sync
