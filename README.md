@@ -19,7 +19,7 @@ uv run modal deploy --strategy recreate modal_app.py
 
 Open the web URL printed by the deployment. Modal creates the app and its `neural-amp-modeler-data` storage volume in your active workspace. Audio and trained models persist there between visits.
 
-**This is a public demo with a shared library.** Anyone with your deployment URL can upload, train, download, and delete pairs. There is no login.
+**This is a public demo with a shared library.** Anyone with your deployment URL can upload, train, download, and delete pairs.
 
 ## Upload a WAV pair
 
@@ -30,13 +30,13 @@ Bring two files containing **the same signal before and after processing**:
 | Input · dry WAV | The unprocessed signal sent into your gear. |
 | Output · processed WAV | That signal recorded after passing through your gear. |
 
-For a new capture, start with [NAM's standard input.wav](https://drive.google.com/file/d/1KbaS4oXXNEuh2aCPLwKrPdf5KFOjda8G/view). Play it through your gear and record the processed result, then upload the original file as **Input** and your recording as **Output**. Keep both files at their full length, including the silence and test pulses.
+For a new capture, start with [NAM's standard input.wav](https://drive.google.com/file/d/1KbaS4oXXNEuh2aCPLwKrPdf5KFOjda8G/view). Play it through your gear and record the processed result, then upload the original file as **Input** and your recording as **Output**.
 
 Both files must be **mono, 48 kHz, and exactly the same length**.
 
 1. In **Your Library**, click **Add pair**.
 2. Name the pair and choose or drop your input and output WAVs.
-3. Click **Add pair**. Progress appears on the new library row, and you can upload more pairs while it finishes. Keep the tab open until uploads complete.
+3. Click **Add pair**. Progress appears on the new library row, and you can upload more pairs while it finishes.
 
 ![Add a pair dialog with separate dry input and processed output WAV fields](docs/images/upload.jpg)
 
