@@ -1,147 +1,17 @@
 # Neural Amp Modeler
 
-Capture an edited Quad Cortex Mini preset, train a Neural Amp Modeler on Modal, and compare the result. Deploy to your own Modal workspace using the [setup below](#modal), then open the URL printed by the deployment.
+A web app for turning paired input/output WAV files into playable Neural Amp Modeler models. Upload your audio, train on Modal GPUs, and download a `.nam` file. Organize pairs and training runs in one library.
 
-The studio is a public demo with a shared library. Anyone with its URL can view, upload, train, download, and delete pairs; no login or workspace key is needed, including in an incognito browser.
+![Library with saved WAV pairs, training history, and model downloads](docs/images/library.jpg)
 
-## Your first capture
+## Run your own app
 
-The standard input WAV plays through your chosen preset for **3 minutes 10 seconds**. You do not need to play guitar. On a fresh checkout, complete the one-time setup below first.
-
-1. **Prepare the Mini.** Connect it by USB, choose a preset and scene, and disable delay, reverb, and modulation. **Unsaved edits (the star beside the name) are supported.** Quit Cortex Control, stop the Neural Amp Modeler live bridge and other recording/playback software, and set the Mini's USB assignment to **1/2 dry, 3/4 wet**.
-
-2. **Run the capture in Terminal from your repository folder.** Change the name to describe your sound:
-
-   ```sh
-   uv run --extra capture neural-amp-modeler capture --name "My preset - no delay or reverb"
-   ```
-
-   Leave the preset and controls unchanged until the command finishes—roughly 3:10 plus setup. It plays the test WAV, records the processed sound, and restores the original input routes.
-
-3. **Open the saved captures in Finder:**
-
-   ```sh
-   open .data/pairs
-   ```
-
-   Open the newest timestamped folder. You will upload `input.wav` and `output.wav` from that same folder.
-
-4. **Open your deployed studio URL.** The studio opens on **Your Library**. Click **Add pair**, name the pair, and choose:
-
-   | App field | File |
-   | --- | --- |
-   | Input · dry WAV | `input.wav` |
-   | Output · processed WAV | `output.wav` |
-
-   Click **Add pair**. The dialog closes immediately and the new row shows upload progress, then processing. You can add more pairs while earlier uploads continue. Failed uploads can be retried on their row without duplicating a saved pair. Keep the browser tab open until uploads finish. You do not need to connect the live bridge for this workflow.
-
-5. **Train and compare.** Click **Train** on the pair’s row. Training uses **A2 Full / 400 epochs**; adjust the epoch count, then click **Start training**. Watch the live loss curves, then choose **Compare audio**. Dry, Reference, and Model appear as three aligned waveform rows. Click or drag a waveform to select its audio and start playing from that position. Click a row’s label to switch audio without changing the playback position. Use the small play/pause button or **Space** to pause and resume. Back in the library, click **View runs** to revisit previous runs. **New training run** saves another version from the same pair; no new recording is needed.
-
-Use the trash icon on a library row to delete that pair and all its training runs, models, and comparison audio. Deletion asks for confirmation and is unavailable while that pair is training.
-
-For the next preset, select and edit it on the Mini, then repeat the capture command with a new name. Each capture gets its own folder; existing captures are never overwritten.
-
-## One-time setup
-
-Run from the repository on a new setup. If the dependencies and standard input are already installed, skip this:
+You need [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, Node.js 22.12+ (24 recommended), and a [Modal account](https://modal.com). Python 3.12+ is required; uv can install it automatically. Training uses your Modal account's GPU credits.
 
 ```sh
-uv sync --extra capture
-uv run neural-amp-modeler input
-```
+git clone https://github.com/DrChrisLevy/neural-amp-modeler.git
+cd neural-amp-modeler
 
-The input command downloads and verifies the standard NAM WAV at `.data/input.wav` in your checkout.
-
-## Capture files and options
-
-The command temporarily routes Input 1 lanes from USB 5, plays the WAV at its original level, records USB 3/4, and restores the original input routes. It **never recalls, changes scenes, saves, or reloads a preset**. Leave the device controls unchanged during capture. Every attempt has its own timestamped directory under `.data/pairs/`:
-
-```text
-20261105-...-brit-crunch-no-reverb/
-  input.wav       Original dry signal
-  output.wav      Matching mono processed signal, ready to upload
-  raw.wav         Untrimmed stereo return, including pre-roll and tail
-  metadata.json   Edited preset snapshot, gains, routing, checksums, result
-```
-
-Before saving `output.wav`, the capture command measures the recording latency and trims the archived return to match the input. It uses the real recorded tail, preserving the full file length without adding silence. Standard NAM captures retain its one-sample causal margin and must pass pulse timing and repeated-passage checks. The input stays byte-for-byte unchanged; the mono output stays 48 kHz / 24-bit at its recorded level. `metadata.json` records the timing correction.
-
-`--wet-channel 4` selects the right processed channel instead of the default left. `--input /path/to/input.wav` chooses another mono 48 kHz source, between 12 seconds and 10 minutes. Custom inputs use correlation with a small causal margin; ambiguous timing fails the export. The standard NAM input is recommended. Neither file is normalized or resampled.
-
-### Repair an older capture
-
-Older captures may contain enough USB buffering delay to fall outside another trainer's pulse search. Export a corrected copy from the original capture folder, which must still contain `input.wav`, `raw.wav`, and `metadata.json`:
-
-```sh
-uv run neural-amp-modeler repair-capture .data/pairs/20261105-221012-347018-inferno \
-  --output "$HOME/Downloads/Inferno - aligned"
-```
-
-Choose a new output folder; an existing folder is never overwritten. This runs offline, verifies the archived file checksums, and leaves the originals intact. No Mini connection or new recording is needed. Upload the corrected `input.wav` and `output.wav` together to Neural Amp Modeler or a dry/wet trainer. For a sweep workflow using the same standard NAM v3 input, upload the corrected `output.wav` as the recorded response.
-
-To check the current preset without playback or routing changes:
-
-```sh
-uv run --extra capture neural-amp-modeler capture --inspect
-```
-
-Automatic routing uses the pinned, unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp/tree/f634ecd3dcf426090b90bc4cc176e4b500494b9e) protocol implementation and is limited to macOS / Mini CorOS 4.1.1. The narrow adapter was adapted from the decision-model project's implementation; it has no runtime dependency on that project. Ctrl-C attempts routing restoration. Disconnecting USB or force-killing the process can prevent it; the metadata records whether restoration completed.
-
-## Training options
-
-Every new run trains **A2 Full**, with one Full model in the downloaded `.nam` file. Click **Train** on a pair’s library row to choose 50, 100, 400, 500, or 1,000 epochs; the default is **400**. Full prioritizes capture accuracy for desktop playback. Lite is useful for constrained playback hardware, but is not offered for new runs in this app.
-
-Every pair can have multiple runs, which can train concurrently, including different epoch settings for the same pair. Each run gets its own GPU container; the app sets no GPU-container cap, while Modal workspace quotas and capacity still apply. The collapsed row shows the active or latest run’s model and epochs. Expand a row’s training history to see every run’s settings and result, then open its curves and comparison audio. Completed runs have a **Download .nam** link directly in their library row and on the training-results page. More epochs don’t guarantee a better sound: export uses the best validation checkpoint.
-
-NAM downloads use the pair’s name and the run’s epoch count: a 400-epoch run for **Victor’s Mega Squid** saves as `victors_mega_squid_400_epochs.nam`. Input and output audio save as `victors_mega_squid_dry.wav` and `victors_mega_squid_wet.wav`.
-
-Existing Lite and Full + Lite runs remain available with their original labels, curves, and downloads. Older Full + Lite runs contain both sizes in one packed `.nam` file; their curves and best-checkpoint selection use the average across both models, and Compare plays Full. New Full runs report only the Full model’s loss and validation score.
-
-## Training details
-
-The worker pins `neural-amp-modeler==0.13.0` and uses its A2 networks, waveform/spectral objective, batch size 16, FP32, and learning-rate schedule. Training starts from scratch.
-
-- The unmodified standard NAM v3 input is recognized by its audio checksum. The trainer still runs upstream's timing-pulse calibration and consistency check on every pair, including aligned exports. For older or externally recorded files with buffered USB latency, both pulses must agree within 20 samples in an extended 500 ms window before upstream calibration is retried. Training does not rewrite uploaded WAVs. Training covers 10–181 seconds; the final nine seconds are validation. The repeated opening passage is excluded from training.
-- Other recordings use a chronological 80/20 split and correlation-based timing. Each partition is aligned separately with its own model context.
-- Upstream's normalization sets training-target RMS to −18 dBFS using **training data only** and applies that same gain to validation. The export hook compensates the model's output gain. Source WAVs stay unchanged; comparison audio is restored to the original level.
-- Audio stays on the GPU; CUDA graphs reduce dispatch overhead. The runtime scores every validation sample after model context and selects the best whole-recording ESR. Progress reports actual batch losses and per-epoch validation.
-- The training curve shows the example-weighted average loss for every epoch, with a live running average during the current epoch. Batch history is sampled uniformly across the run so long sessions retain their early measurements. Training loss and validation ESR use different objectives and scales.
-
-The runtime has custom batching, progress, and chunked validation, so it is not the unchanged upstream trainer. Older runs retain their original recipe and scores; they are not directly comparable to new runs. Independent guitar performances and listening tests are still needed to establish perceptual quality.
-
-A fixed amp/drive/cab sound is the intended target. Disable time effects and changing modulation for these captures. Compare plays saved validation audio; live model inference is not implemented.
-
-## Live recording and local development
-
-Live recording is available under **Add pair → Record a live pair**. The Record button stays visible. If the bridge is not connected, clicking it opens the setup instructions; the connection is detected automatically when the bridge starts. Copy the command from that dialog, which automatically uses the URL you opened. Its form is below; replace `YOUR_MODAL_WEB_URL` with the exact URL printed by your deployment:
-
-```sh
-uv run neural-amp-modeler bridge --url "YOUR_MODAL_WEB_URL"
-```
-
-The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp signal. Don't run the bridge and capture command together. `uv run neural-amp-modeler devices` lists interfaces. For local UI development, see the frontend setup below. Local training is deliberately unavailable without a configured worker.
-
-## Frontend development
-
-The UI uses React, TypeScript, shadcn/ui (Radix), Tailwind CSS, and Recharts. UI source lives in `frontend/`; the Python API serves the built assets from the same origin.
-
-Use Node 22.12+ (Node 24 recommended). Before serving or deploying:
-
-```sh
-npm ci --prefix frontend
-npm run build --prefix frontend
-uv run neural-amp-modeler serve
-```
-
-The build writes hashed assets to `src/nam_studio/static/`, which is generated and ignored by Git. For hot reload, keep the Python server running and run `npm run dev --prefix frontend` in another terminal. Open the printed Vite URL; API and live monitoring requests proxy to port 8000. URLs preserve the selected pair, run, and panel.
-
-## Modal
-
-`modal_app.py` defines a web function and an isolated training worker that prefers RTX PRO 6000, with H100 as a capacity fallback. Both the GPU worker and web container have a two-minute idle timeout. Idle GPU time is billable. Live recording warms the GPU; local WAV capture currently does not. Web concurrency is target 16 / maximum 64, with one web container owning the live bridge, so sticky sessions are unnecessary. Recordings and models persist in the `neural-amp-modeler-data` Volume.
-
-From your checkout, install dependencies and authenticate the Modal CLI with your own account (skip `modal setup` if already configured). No app secret or `.env` file is required. Deploy when recording/training are idle:
-
-```sh
 uv sync
 uv run modal setup
 npm ci --prefix frontend
@@ -149,19 +19,67 @@ npm run build --prefix frontend
 uv run modal deploy --strategy recreate modal_app.py
 ```
 
-Modal creates the `neural-amp-modeler` app and `neural-amp-modeler-data` Volume in your active Modal workspace and prints your web URL. There is no personal deployment URL in the source: the frontend calls relative API paths and connects live monitoring to the current host. The bridge takes its destination from `--url` (defaulting to `http://localhost:8000` for local use), so another user can deploy without changing the code.
+Open the web URL printed by the deployment. Modal creates the app and its `neural-amp-modeler-data` storage volume in your active workspace. Audio and trained models persist there between visits. No personal URL, `.env` file, or app secret is needed.
 
-Locally, `NAM_STUDIO_DATA` can override the `.data` folder. The Python package is `nam_studio` (distribution `neural-amp-modeler-studio`), keeping it separate from the upstream `neural-amp-modeler` training library and its `nam` module.
+**This is a public demo with a shared library.** Anyone with your deployment URL can upload, train, download, and delete pairs. There is no login.
 
-Reconnect the live bridge after deployment. Captures, `.env`, and scratch experiments are ignored by Git.
+To deploy changes, rebuild the frontend and rerun the deploy command when recording and training are idle. For local UI development, see [frontend/README.md](frontend/README.md).
 
-## Checks
+## Upload a WAV pair
+
+Bring two files containing **the same signal before and after processing**:
+
+| File | What it contains |
+| --- | --- |
+| Input · dry WAV | The unprocessed signal sent into your gear. |
+| Output · processed WAV | That signal recorded after passing through your gear. |
+
+Both files must be **mono, 48 kHz, and exactly the same length**. Use 12 seconds to 10 minutes of audio, without clipping, up to 128 MB per file. Capture a fixed amp, drive, or cab sound with delay, reverb, and modulation disabled. Filenames can be anything.
+
+1. In **Your Library**, click **Add pair**.
+2. Name the pair and choose or drop your input and output WAVs.
+3. Click **Add pair**. Progress appears on the new library row, and you can upload more pairs while it finishes. Keep the tab open until uploads complete.
+
+![Add a pair dialog with separate dry input and processed output WAV fields](docs/images/upload.jpg)
+
+## Train and download
+
+1. Click **Train** on a pair. The app trains an **A2 Full** model; choose an epoch count (default **400**) and click **Start training**.
+2. Open the run to watch its training curves. Runs are saved separately, so you can try different epoch counts and train multiple runs concurrently, subject to your Modal quota. Training continues if you close the tab.
+3. When it finishes, click **Download .nam** on the results page, or expand **View runs** in the library and use that run's download button.
+
+Downloads include the pair name and epoch count, for example `my_amp_400_epochs.nam`. Each new run exports one Full model, using its best validation checkpoint. Load it in a NAM-compatible player that supports A2 models.
+
+The **Compare audio** tab lets you listen to the dry signal, recorded reference, and model output. Click a waveform to play from that position; click a row's label to switch sounds at the same playback position.
+
+![Completed training run with loss curves and a Download .nam button](docs/images/training.jpg)
+
+## Quad Cortex Mini (optional)
+
+If you already have WAV pairs, the steps above are all you need. Mini users can also create pairs over USB.
+
+### Record yourself playing
+
+Connect the Mini by USB, choose your preset and scene, and set its USB assignment to **1/2 dry, 3/4 wet** at **48 kHz**. Disable delay, reverb, and modulation for the sound you want to model.
+
+From the repository folder, run:
 
 ```sh
-npm run lint --prefix frontend
-npm run build --prefix frontend
-uv run --extra capture pytest -q
-node --test tests/test_*.cjs
+uv run neural-amp-modeler bridge --url "YOUR_MODAL_WEB_URL"
 ```
 
-Offline tests exercise anonymous access, uploads/downloads, recording transport, interrupted capture restoration, blocked preset writes, timing/split rules, and responsive storage/streaming. Training-runtime tests additionally require the Modal training image and include normalization/export gain and GPU graph equivalence. Hardware playback is always an explicit capture command, never part of the tests.
+Replace `YOUR_MODAL_WEB_URL` with your deployment's URL. In the app, choose **Add pair → Record a pair**. The connection is detected automatically. The bridge captures dry USB channel 1 and processed channel 3 while you play; stopping the recording saves the pair to your library. Keep Terminal open while recording, and press **Ctrl+C** there when finished.
+
+### Capture with the standard NAM test WAV
+
+The automated capture command supports **macOS and Mini CorOS 4.1.1** through the unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp) adapter. It plays the standard test signal through your selected preset instead of recording your playing.
+
+Choose the preset and scene, disable time effects, then **quit Cortex Control and stop the live bridge and other audio apps**. Keep the Mini connected and its controls unchanged. Run:
+
+```sh
+uv sync --extra capture
+uv run neural-amp-modeler input
+uv run --extra capture neural-amp-modeler capture --name "My preset"
+```
+
+The `input` command downloads the test WAV once. Capture takes about **3 minutes 10 seconds** plus setup and restores the original input routing afterward. Upload `input.wav` and `output.wav` from the new timestamped folder under `.data/pairs/`, then train as usual.
