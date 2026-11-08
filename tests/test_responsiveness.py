@@ -149,8 +149,7 @@ def test_slow_upload_does_not_block_controls_and_survives_disconnect(tmp_path, m
 
 def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatch):
     async def run():
-        async with studio(tmp_path, key="test-key") as (app, client):
-            client.headers["Authorization"] = "Bearer test-key"
+        async with studio(tmp_path) as (app, client):
             take = (await client.post("/api/demo")).json()
             await client.get("/api/state")
             source = app.state.store.path("captures", take["id"]) / "dry.wav"
@@ -181,7 +180,6 @@ def test_audio_ranges_share_one_copy_and_do_not_block_state(tmp_path, monkeypatc
             response = await client.get(take["dry_url"], headers={"Range": "bytes=64-127"})
             assert response.status_code == 206 and response.content == expected[64:128]
             assert calls == [1]
-            assert (await client.get(take["dry_url"], headers={"Authorization": "Bearer wrong"})).status_code == 401
             assert all(entry["users"] == 0 for entry in app.state.artifacts.entries.values())
     asyncio.run(run())
 

@@ -2,9 +2,9 @@
 
 // Each upload owns its request and status; none takes the studio's action lock.
 window.NAMUploads = class {
-  constructor({changed, completed, unauthorized, request = () => new XMLHttpRequest()}) {
+  constructor({changed, completed, request = () => new XMLHttpRequest()}) {
     this.items = new Map();
-    Object.assign(this, {changed, completed, unauthorized, request});
+    Object.assign(this, {changed, completed, request});
   }
   add(name, dry, wet) {
     const id = crypto.randomUUID().replaceAll('-', '');
@@ -37,7 +37,6 @@ window.NAMUploads = class {
         this.changed();
       } else {
         fail(typeof xhr.response?.detail === 'string' ? xhr.response.detail : `Upload failed (${xhr.status}). Try again.`);
-        if (xhr.status === 401) this.unauthorized();
       }
     };
     xhr.onerror = () => fail('Connection lost. Retry this upload.');

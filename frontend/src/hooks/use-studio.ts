@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { api, ApiError } from "@/lib/studio"
+import { api } from "@/lib/studio"
 import type {
   Bridge,
   Capture,
@@ -29,10 +29,6 @@ export function useStudio() {
   const [uploads, setUploads] = useState<Upload[]>([])
   const revision = useRef("")
   const refreshing = useRef<Promise<void> | null>(null)
-  const lock = useCallback(
-    () => window.dispatchEvent(new Event("studio-locked")),
-    []
-  )
 
   const refresh = useCallback(() => {
     if (refreshing.current) return refreshing.current
@@ -53,8 +49,7 @@ export function useStudio() {
         setOffline("")
       })
       .catch((error) => {
-        if (!(error instanceof ApiError && error.status === 401))
-          setOffline(error.message)
+        setOffline(error.message)
       })
       .finally(() => {
         refreshing.current = null
@@ -71,23 +66,13 @@ export function useStudio() {
     }
   }, [])
   useEffect(() => {
-    const locked = () => {
-      setConfig((previous) =>
-        previous ? { ...previous, authenticated: false } : null
-      )
-      setState(empty)
-      setLoaded(false)
-      revision.current = ""
-    }
-    window.addEventListener("studio-locked", locked)
     // initialize only sets state after the config request resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void initialize()
-    return () => window.removeEventListener("studio-locked", locked)
   }, [initialize])
 
   useEffect(() => {
-    if (!config?.authenticated) return
+    if (!config) return
     let stopped = false
     let socket: WebSocket | null = null
     let reconnect: ReturnType<typeof setTimeout>
@@ -169,7 +154,7 @@ export function useStudio() {
       socket?.close()
       document.removeEventListener("visibilitychange", visible)
     }
-  }, [config?.authenticated, refresh])
+  }, [config, refresh])
 
   // The manager stores callbacks; it does not invoke them during construction.
   // eslint-disable-next-line react-hooks/refs
@@ -187,7 +172,6 @@ export function useStudio() {
         }))
         void refresh()
       },
-      unauthorized: lock,
     })
     return manager
   })

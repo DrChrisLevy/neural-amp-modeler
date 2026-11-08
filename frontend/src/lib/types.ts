@@ -58,8 +58,6 @@ export type StudioState = {
   revision?: string
 }
 export type Config = {
-  authenticated: boolean
-  auth_required: boolean
   training_available: boolean
 }
 export type Upload = {
@@ -103,11 +101,9 @@ declare global {
     NAMUploads: new (options: {
       changed: () => void
       completed: (capture: Capture) => void
-      unauthorized: () => void
     }) => UploadManager
     NAMComparisonAudio: new (options: {
       changed: () => void
-      unauthorized: () => void
     }) => AudioEngine
     NAMLossChart: {
       format: (value?: number) => string

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import queue
 import struct
 import threading
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
@@ -58,19 +57,6 @@ def websocket_url(origin: str) -> str:
         )
     scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
     return urlunsplit((scheme, parsed.netloc, "/ws/bridge", "", ""))
-
-
-def resolve_token(value: str | None, environ: Mapping[str, str] | None = None) -> str | None:
-    """Read secrets without including their value in status messages."""
-    env = os.environ if environ is None else environ
-    if value is None:
-        return env.get("NAM_STUDIO_KEY") or None
-    if value.startswith("env:"):
-        name = value[4:]
-        if not name or not env.get(name):
-            raise BridgeError("The environment variable requested by --token is not set.")
-        return env[name]
-    return value or None
 
 
 def input_devices() -> list[InputDevice]:
@@ -281,7 +267,6 @@ async def run_bridge(
     device: str | int | None = None,
     dry_channel: int = 1,
     wet_channel: int = 3,
-    token: str | None = None,
     synthetic: bool = False,
     emit: Callable[[str], None] = print,
 ) -> None:
@@ -310,7 +295,6 @@ async def run_bridge(
     async with connect(endpoint, compression=None, max_size=65_536, max_queue=8, close_timeout=3) as websocket:
         await websocket.send(json.dumps({
             "type": "hello",
-            "token": token,
             "device": name,
             "name": name,
             "device_index": selected.index if selected else None,
@@ -323,9 +307,9 @@ async def run_bridge(
         try:
             ready = json.loads(await asyncio.wait_for(websocket.recv(), timeout=15))
         except (ValueError, TypeError, asyncio.TimeoutError) as exc:
-            raise BridgeError("Server did not acknowledge the audio bridge. Check its URL and access key.") from exc
+            raise BridgeError("Server did not acknowledge the audio bridge. Check its URL.") from exc
         if not isinstance(ready, dict) or ready.get("type") != "ready":
-            raise BridgeError("Server refused the audio bridge. Check the access key and close any other bridge.")
+            raise BridgeError("Server refused the audio bridge. Close any other bridge and retry.")
 
         emit(f"Connected: {name} · 48 kHz · dry/wet pair. Press Ctrl+C to stop.")
         if synthetic:

@@ -29,8 +29,6 @@ export async function api<T>(
   }
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
-    if (response.status === 401 && path !== "/api/auth")
-      window.dispatchEvent(new Event("studio-locked"))
     throw new ApiError(
       typeof payload?.detail === "string"
         ? payload.detail

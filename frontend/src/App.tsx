@@ -9,7 +9,6 @@ const PairDetail = lazy(() =>
 )
 import { Recording } from "@/components/recording"
 import {
-  AuthDialog,
   ConnectionDialog,
   DeleteDialog,
   TrainDialog,
@@ -54,7 +53,6 @@ export default function App() {
   const jobs = studio.state.jobs.filter((item) => item.capture_id === pairId)
   const job =
     jobs.find((item) => item.id === jobId) || jobs.find(active) || jobs[0]
-  const authenticated = !!studio.config?.authenticated
   useEffect(() => {
     const changed = () => {
       const route = readRoute()
@@ -182,27 +180,25 @@ export default function App() {
             </Button>
           </div>
         )}
-        {authenticated &&
-          studio.state.bridge.recording &&
-          view !== "record" && (
-            <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
-              <span className="flex items-center gap-2">
-                <span className="size-2 animate-pulse rounded-full bg-primary" />
-                A live recording is in progress.
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setView("record")
-                  location.hash = "record"
-                }}
-              >
-                View recording
-              </Button>
-            </div>
-          )}
-        {view === "detail" && take && authenticated ? (
+        {studio.state.bridge.recording && view !== "record" && (
+          <div className="mb-6 flex items-center justify-between gap-4 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
+            <span className="flex items-center gap-2">
+              <span className="size-2 animate-pulse rounded-full bg-primary" />
+              A live recording is in progress.
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setView("record")
+                location.hash = "record"
+              }}
+            >
+              View recording
+            </Button>
+          </div>
+        )}
+        {view === "detail" && take ? (
           <Suspense
             fallback={
               <div className="py-16 text-sm text-muted-foreground">
@@ -221,7 +217,7 @@ export default function App() {
               onTrain={() => setTrainTake(take)}
             />
           </Suspense>
-        ) : view === "record" && authenticated ? (
+        ) : view === "record" ? (
           <Recording
             studio={studio}
             initialName={recordName}
@@ -239,7 +235,7 @@ export default function App() {
           />
         )}
       </main>
-      {authenticated && uploadOpen && (
+      {uploadOpen && (
         <UploadDialog
           studio={studio}
           onClose={() => setUploadOpen(false)}
@@ -255,7 +251,7 @@ export default function App() {
           }}
         />
       )}
-      {authenticated && trainTake && (
+      {trainTake && (
         <TrainDialog
           take={trainTake}
           studio={studio}
@@ -263,21 +259,18 @@ export default function App() {
           onStarted={(next) => open(next.capture_id, next.id)}
         />
       )}
-      {authenticated && deleteTake && (
+      {deleteTake && (
         <DeleteDialog
           take={deleteTake}
           studio={studio}
           onClose={() => setDeleteTake(null)}
         />
       )}
-      {authenticated && connectionOpen && (
+      {connectionOpen && (
         <ConnectionDialog
           studio={studio}
           onClose={() => setConnectionOpen(false)}
         />
-      )}
-      {studio.config && !authenticated && (
-        <AuthDialog onUnlock={studio.initialize} />
       )}
     </div>
   )

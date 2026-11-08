@@ -386,59 +386,6 @@ export function DeleteDialog({
   )
 }
 
-export function AuthDialog({ onUnlock }: { onUnlock: () => Promise<void> }) {
-  const [key, setKey] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState("")
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    setBusy(true)
-    setError("")
-    try {
-      await post("/api/auth", { key })
-      setKey("")
-      await onUnlock()
-    } catch (error) {
-      setError((error as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open>
-      <DialogContent
-        showCloseButton={false}
-        onEscapeKeyDown={(event) => event.preventDefault()}
-        onPointerDownOutside={(event) => event.preventDefault()}
-        className="sm:max-w-sm"
-      >
-        <DialogHeader>
-          <DialogTitle>Workspace access</DialogTitle>
-          <DialogDescription>
-            Enter your workspace key to open the studio.
-          </DialogDescription>
-        </DialogHeader>
-        <form className="space-y-4" onSubmit={submit}>
-          <Label htmlFor="workspace-key">Workspace key</Label>
-          <Input
-            id="workspace-key"
-            type="password"
-            autoComplete="current-password"
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            required
-            autoFocus
-          />
-          <ErrorMessage message={error} />
-          <Button type="submit" disabled={busy} className="w-full">
-            {busy && <LoaderCircle className="animate-spin" />}Open studio
-          </Button>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 export function ConnectionDialog({
   studio,
   onClose,
@@ -450,10 +397,7 @@ export function ConnectionDialog({
   const [error, setError] = useState("")
   const connected = studio.state.bridge.connected
   const command =
-    "uv run" +
-    (studio.config?.auth_required ? " --env-file .env" : "") +
-    " neural-amp-modeler bridge --url " +
-    location.origin
+    "uv run neural-amp-modeler bridge --url " + location.origin
   async function copy() {
     try {
       await navigator.clipboard.writeText(command)

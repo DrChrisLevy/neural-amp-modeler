@@ -1,6 +1,8 @@
 # Neural Amp Modeler
 
-Capture an edited Quad Cortex Mini preset, train a Neural Amp Modeler on Modal, and compare the result. [Open the studio](https://drchrislevy--neural-amp-modeler-web.us-east.modal.run).
+Capture an edited Quad Cortex Mini preset, train a Neural Amp Modeler on Modal, and compare the result. Deploy to your own Modal workspace using the [setup below](#modal), then open the URL printed by the deployment.
+
+The studio is a public demo with a shared library. Anyone with its URL can view, upload, train, download, and delete pairs; no login or workspace key is needed, including in an incognito browser.
 
 ## Your first capture
 
@@ -8,10 +10,9 @@ The standard input WAV plays through your chosen preset for **3 minutes 10 secon
 
 1. **Prepare the Mini.** Connect it by USB, choose a preset and scene, and disable delay, reverb, and modulation. **Unsaved edits (the star beside the name) are supported.** Quit Cortex Control, stop the Neural Amp Modeler live bridge and other recording/playback software, and set the Mini's USB assignment to **1/2 dry, 3/4 wet**.
 
-2. **Run the capture in Terminal.** Change the name to describe your sound:
+2. **Run the capture in Terminal from your repository folder.** Change the name to describe your sound:
 
    ```sh
-   cd /Users/christopher/personal/neural-amp-modeler
    uv run --extra capture neural-amp-modeler capture --name "My preset - no delay or reverb"
    ```
 
@@ -25,7 +26,7 @@ The standard input WAV plays through your chosen preset for **3 minutes 10 secon
 
    Open the newest timestamped folder. You will upload `input.wav` and `output.wav` from that same folder.
 
-4. **Upload to [Neural Amp Modeler](https://drchrislevy--neural-amp-modeler-web.us-east.modal.run/).** The studio opens on **Your Library**. Click **Add pair**, name the pair, and choose:
+4. **Open your deployed studio URL.** The studio opens on **Your Library**. Click **Add pair**, name the pair, and choose:
 
    | App field | File |
    | --- | --- |
@@ -45,12 +46,11 @@ For the next preset, select and edit it on the Mini, then repeat the capture com
 Run from the repository on a new setup. If the dependencies and standard input are already installed, skip this:
 
 ```sh
-cd /Users/christopher/personal/neural-amp-modeler
 uv sync --extra capture
 uv run neural-amp-modeler input
 ```
 
-The input command downloads and verifies the standard NAM WAV at `.data/input.wav`. On another computer, replace the `cd` path with your checkout location.
+The input command downloads and verifies the standard NAM WAV at `.data/input.wav` in your checkout.
 
 ## Capture files and options
 
@@ -113,10 +113,10 @@ A fixed amp/drive/cab sound is the intended target. Disable time effects and cha
 
 ## Live recording and local development
 
-Live recording is available under **Add pair → Record a live pair**. The Record button stays visible. If the bridge is not connected, clicking it opens the setup instructions; the connection is detected automatically when the bridge starts. The command is:
+Live recording is available under **Add pair → Record a live pair**. The Record button stays visible. If the bridge is not connected, clicking it opens the setup instructions; the connection is detected automatically when the bridge starts. Copy the command from that dialog, which automatically uses the URL you opened. Its form is below; replace `YOUR_MODAL_WEB_URL` with the exact URL printed by your deployment:
 
 ```sh
-uv run --env-file .env neural-amp-modeler bridge --url https://drchrislevy--neural-amp-modeler-web.us-east.modal.run
+uv run neural-amp-modeler bridge --url "YOUR_MODAL_WEB_URL"
 ```
 
 The bridge records USB 1 (dry) and USB 3 (processed); it doesn't play a reamp signal. Don't run the bridge and capture command together. `uv run neural-amp-modeler devices` lists interfaces. For local UI development, see the frontend setup below. Local training is deliberately unavailable without a configured worker.
@@ -139,15 +139,19 @@ The build writes hashed assets to `src/nam_studio/static/`, which is generated a
 
 `modal_app.py` defines a web function and an isolated training worker that prefers RTX PRO 6000, with H100 as a capacity fallback. Both the GPU worker and web container have a two-minute idle timeout. Idle GPU time is billable. Live recording warms the GPU; local WAV capture currently does not. Web concurrency is target 16 / maximum 64, with one web container owning the live bridge, so sticky sessions are unnecessary. Recordings and models persist in the `neural-amp-modeler-data` Volume.
 
-The private workspace key is `NAM_STUDIO_KEY` in `.env` and the `neural-amp-modeler-auth` Modal Secret, never in Git. For a new deployment, provision that secret with `uv run modal secret create neural-amp-modeler-auth --from-dotenv .env`. Deploy when recording/training are idle:
+From your checkout, install dependencies and authenticate the Modal CLI with your own account (skip `modal setup` if already configured). No app secret or `.env` file is required. Deploy when recording/training are idle:
 
 ```sh
+uv sync
+uv run modal setup
 npm ci --prefix frontend
 npm run build --prefix frontend
 uv run modal deploy --strategy recreate modal_app.py
 ```
 
-The deployed app is `neural-amp-modeler`. Locally, `NAM_STUDIO_DATA` can override the `.data` folder. The Python package is `nam_studio` (distribution `neural-amp-modeler-studio`), keeping it separate from the upstream `neural-amp-modeler` training library and its `nam` module.
+Modal creates the `neural-amp-modeler` app and `neural-amp-modeler-data` Volume in your active Modal workspace and prints your web URL. There is no personal deployment URL in the source: the frontend calls relative API paths and connects live monitoring to the current host. The bridge takes its destination from `--url` (defaulting to `http://localhost:8000` for local use), so another user can deploy without changing the code.
+
+Locally, `NAM_STUDIO_DATA` can override the `.data` folder. The Python package is `nam_studio` (distribution `neural-amp-modeler-studio`), keeping it separate from the upstream `neural-amp-modeler` training library and its `nam` module.
 
 Reconnect the live bridge after deployment. Captures, `.env`, and scratch experiments are ignored by Git.
 
@@ -160,4 +164,4 @@ uv run --extra capture pytest -q
 node --test tests/test_*.cjs
 ```
 
-Offline tests exercise upload/auth, recording transport, interrupted capture restoration, blocked preset writes, timing/split rules, and responsive storage/streaming. Training-runtime tests additionally require the Modal training image and include normalization/export gain and GPU graph equivalence. Hardware playback is always an explicit capture command, never part of the tests.
+Offline tests exercise anonymous access, uploads/downloads, recording transport, interrupted capture restoration, blocked preset writes, timing/split rules, and responsive storage/streaming. Training-runtime tests additionally require the Modal training image and include normalization/export gain and GPU graph equivalence. Hardware playback is always an explicit capture command, never part of the tests.

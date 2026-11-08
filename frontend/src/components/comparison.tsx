@@ -111,7 +111,6 @@ export function Comparison({ take, job }: { take: Capture; job?: Job }) {
         })
         setPosition(audio.currentTime)
       },
-      unauthorized: () => window.dispatchEvent(new Event("studio-locked")),
     })
     engine.current = audio
     void audio.load(key, { dry, reference, model })

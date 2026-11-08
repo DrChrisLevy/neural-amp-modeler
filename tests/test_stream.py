@@ -19,15 +19,14 @@ from nam_studio.storage import SAMPLE_RATE
 
 @contextmanager
 def studio(tmp_path, submit=None, warm=None):
-    app = create_app(tmp_path, key="test-stream-key", submit=submit, warm=warm)
+    app = create_app(tmp_path, submit=submit, warm=warm)
     with TestClient(app) as client:
-        client.headers["Authorization"] = "Bearer test-stream-key"
         yield app, client
 
 
 def connect(ws, name="Synthetic test source"):
     ws.send_json({
-        "type": "hello", "token": "test-stream-key", "source": "demo",
+        "type": "hello", "source": "demo",
         "device": name, "sample_rate": SAMPLE_RATE, "channels": 2,
     })
     assert ws.receive_json() == {"type": "ready"}
@@ -170,7 +169,7 @@ def test_second_bridge_is_rejected_and_disconnect_allows_replacement(tmp_path):
             connect(first, "First synthetic bridge")
             with client.websocket_connect("/ws/bridge") as second:
                 second.send_json({
-                    "type": "hello", "token": "test-stream-key", "source": "demo",
+                    "type": "hello", "source": "demo",
                     "device": "Rejected bridge", "sample_rate": SAMPLE_RATE, "channels": 2,
                 })
                 with pytest.raises(WebSocketDisconnect) as closed:

@@ -1,6 +1,7 @@
 import io
 
 import numpy as np
+import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
@@ -16,25 +17,35 @@ def wav(seconds=2, channels=1):
     return stream.getvalue()
 
 
-def test_private_workspace_requires_key_for_audio_and_state(tmp_path):
-    client = TestClient(create_app(tmp_path, key="test-key"))
-    assert client.get("/api/config").json()["authenticated"] is False
-    assert client.get("/api/state").status_code == 401
-    assert client.post("/api/auth", json={"key": "wrong"}).status_code == 401
-    assert client.post("/api/auth", json={"key": "test-key"}).status_code == 200
-    assert client.get("/api/state").json()["captures"] == []
-
-
-def test_launch_ticket_is_authenticated_single_use_and_sets_cookie(tmp_path):
-    server = create_app(tmp_path, key="private-key")
-    local = TestClient(server)
-    assert local.post("/api/launch").status_code == 401
-    url = local.post("/api/launch", headers={"Authorization": "Bearer private-key"}).json()["url"]
-    assert "private-key" not in url
-    browser = TestClient(server)
-    assert browser.get(url, follow_redirects=False).status_code == 303
-    assert browser.get("/api/state").status_code == 200
-    assert browser.get(url).status_code == 401
+@pytest.mark.parametrize("legacy_key", ["", "unused-old-key"])
+@pytest.mark.parametrize("base_url", ["http://localhost:8000", "https://another-workspace.example"])
+def test_fresh_visitors_can_use_the_studio_without_credentials(tmp_path, monkeypatch, legacy_key, base_url):
+    # A leftover environment variable must not bring back the retired login flow.
+    monkeypatch.setenv("NAM_STUDIO_MODAL", "1")
+    monkeypatch.setenv("NAM_STUDIO_KEY", legacy_key)
+    server = create_app(tmp_path)
+    with TestClient(server, base_url=base_url) as client:
+        config = client.get("/api/config")
+        assert config.status_code == 200
+        assert config.json()["training_available"] is False
+        assert "set-cookie" not in config.headers
+        assert client.get("/api/state").json()["captures"] == []
+        take = client.post("/api/captures/upload", files={
+            "dry": ("input.wav", wav(), "audio/wav"),
+            "wet": ("output.wav", wav(), "audio/wav"),
+        }).json()
+        assert not client.cookies
+        assert client.get("/api/state").json()["captures"][0]["id"] == take["id"]
+        assert take["dry_url"].startswith("/api/")
+        assert take["wet_url"].startswith("/api/")
+        audio = client.get(take["dry_url"], headers={"Range": "bytes=0-43"})
+        assert audio.status_code == 206
+        assert audio.content.startswith(b"RIFF")
+        assert "cookie" not in audio.request.headers
+        assert "authorization" not in audio.request.headers
+        with client.websocket_connect("/ws/monitor") as monitor:
+            assert monitor.receive_json()["type"] == "state"
+        assert not client.cookies
 
 
 def test_upload_roundtrip_preserves_audio_and_cannot_escape_store(tmp_path):

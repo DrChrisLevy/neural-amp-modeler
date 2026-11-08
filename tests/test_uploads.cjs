@@ -8,13 +8,13 @@ function setup() {
   const context = {window:{}, crypto:webcrypto, FormData};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../frontend/src/lib/engines/uploads.js'), 'utf8'), context);
   const requests=[], completed=[];
-  let changes=0, unauthorized=0;
+  let changes=0;
   const uploads = new context.window.NAMUploads({
-    changed:()=>changes++, completed:(take)=>completed.push(take), unauthorized:()=>unauthorized++,
+    changed:()=>changes++, completed:(take)=>completed.push(take),
     request:()=>{ const r={upload:{},open(){},send(body){this.body=body;}}; requests.push(r); return r; },
   });
   const file=new File(['wav'], 'input.wav', {type:'audio/wav'});
-  return {uploads, requests, completed, file, changes:()=>changes, unauthorized:()=>unauthorized};
+  return {uploads, requests, completed, file, changes:()=>changes};
 }
 test('two uploads run independently and may finish out of order',()=>{
   const {uploads, requests, completed, file}=setup();
@@ -47,13 +47,13 @@ test('failed uploads keep their files and stable identity for retry',()=>{
   requests[1].ontimeout();
   assert.equal(uploads.items.get(id).status,'failed');
 });
-test('authentication and invalid audio errors stay on the affected row',()=>{
+test('server and invalid audio errors stay on the affected row',()=>{
   const s=setup();
   const a=s.uploads.add('A',s.file,s.file), b=s.uploads.add('B',s.file,s.file);
   Object.assign(s.requests[0],{status:400,response:{detail:'Use 48 kHz WAV files.'}}); s.requests[0].onload();
   assert.equal(s.uploads.items.get(a).error,'Use 48 kHz WAV files.');
   assert.equal(s.uploads.items.get(b).status,'uploading');
-  Object.assign(s.requests[1],{status:401,response:{detail:'Unlock your workspace.'}}); s.requests[1].onload();
-  assert.equal(s.unauthorized(),1);
+  Object.assign(s.requests[1],{status:500,response:{detail:'Upload could not be saved.'}}); s.requests[1].onload();
+  assert.equal(s.uploads.items.get(b).error,'Upload could not be saved.');
   assert.equal(s.uploads.items.size,2);
 });

@@ -47,9 +47,8 @@ def test_downloads_use_parent_pair_name_and_keep_audio_playable(tmp_path, name, 
 
 
 def test_delete_cascades_runs_and_revokes_cached_downloads(tmp_path):
-    app = create_app(tmp_path, key='private')
+    app = create_app(tmp_path)
     with TestClient(app) as c:
-        c.headers['Authorization'] = 'Bearer private'
         first = c.post('/api/captures/upload', files=files(), data={'name':'Delete'}).json()
         other = c.post('/api/captures/upload', files=files(), data={'name':'Keep'}).json()
         job_id = 'a' * 32
@@ -81,11 +80,9 @@ def test_delete_refuses_active_jobs(tmp_path, status):
         assert app.state.store.path('jobs',job_id).exists()
 
 
-def test_delete_auth_ids_and_missing_rows(tmp_path):
-    app = create_app(tmp_path,key='private')
+def test_delete_rejects_invalid_ids_and_missing_rows(tmp_path):
+    app = create_app(tmp_path)
     with TestClient(app) as c:
-        assert c.delete('/api/captures/'+'a'*32).status_code == 401
-        c.headers['Authorization']='Bearer private'
         assert c.delete('/api/captures/invalid').status_code == 400
         assert c.delete('/api/captures/'+'a'*32).status_code == 404
 

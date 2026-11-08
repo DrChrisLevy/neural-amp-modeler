@@ -10,9 +10,8 @@
 
   // All clips share one audio clock and start sample. Switching only changes gains.
   class ComparisonAudio {
-    constructor({changed = () => {}, unauthorized = () => {}, context, fetcher = (...args) => fetch(...args)} = {}) {
+    constructor({changed = () => {}, context, fetcher = (...args) => fetch(...args)} = {}) {
       this.changed = changed;
-      this.unauthorized = unauthorized;
       this.contextFactory = context || (() => new (window.AudioContext || window.webkitAudioContext)());
       this.fetcher = fetcher;
       this.key = null;
@@ -43,7 +42,6 @@
         try {
           const response = await this.fetcher(urls[source], {credentials: 'same-origin', signal});
           if (generation !== this.generation) return;
-          if (response.status === 401) { this.unauthorized(); throw new Error('Unlock your workspace to listen.'); }
           if (!response.ok) throw new Error('Audio could not load.');
           const bytes = await response.arrayBuffer();
           if (generation !== this.generation) return;

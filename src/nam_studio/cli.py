@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import sys
 
-from .bridge import BridgeError, input_devices, resolve_token, run_bridge
+from .bridge import BridgeError, input_devices, run_bridge
 
 
 def parser() -> argparse.ArgumentParser:
@@ -32,7 +32,6 @@ def parser() -> argparse.ArgumentParser:
     bridge.add_argument("--device", help="Input device name or numeric index; otherwise find a unique Quad Cortex.")
     bridge.add_argument("--dry-channel", type=int, default=1, help="Dry USB channel, numbered from 1 (default: 1).")
     bridge.add_argument("--wet-channel", type=int, default=3, help="Wet USB channel, numbered from 1 (default: 3).")
-    bridge.add_argument("--token", help="Access key or env:VARIABLE. Prefer the environment; omitted reads NAM_STUDIO_KEY.")
     bridge.add_argument("--synthetic", action="store_true", help="Explicit demo source for testing; opens no audio hardware.")
 
     serve = commands.add_parser("serve", help="Serve the local Neural Amp Modeler app.")
@@ -43,7 +42,6 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = parser().parse_args(argv)
-    token = None
     try:
         if args.command == "devices":
             devices = input_devices()
@@ -75,13 +73,11 @@ def main(argv: list[str] | None = None) -> None:
             from .capture import repair_capture
             repair_capture(args.source, args.output)
         elif args.command == "bridge":
-            token = resolve_token(args.token)
             asyncio.run(run_bridge(
                 args.url,
                 device=args.device,
                 dry_channel=args.dry_channel,
                 wet_channel=args.wet_channel,
-                token=token,
                 synthetic=args.synthetic,
             ))
         else:
@@ -93,10 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print("\nAudio bridge stopped." if args.command == "bridge" else "\nStopped.")
     except BridgeError as exc:
-        message = str(exc)
-        if token:
-            message = message.replace(token, "[redacted]")
-        print(f"Error: {message}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
     except Exception as exc:
         if args.command in {"capture", "input", "repair-capture"}:
@@ -104,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(1) from None
         # Do not display server replies, connection headers, or potential secrets.
         print(
-            f"Error: {type(exc).__name__}. Check the server connection, access key, "
+            f"Error: {type(exc).__name__}. Check the server connection "
             "and audio device; the stream has stopped.",
             file=sys.stderr,
         )

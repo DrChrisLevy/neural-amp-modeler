@@ -6,14 +6,13 @@ import modal
 
 app = modal.App("neural-amp-modeler")
 data = modal.Volume.from_name("neural-amp-modeler-data", create_if_missing=True, version=2)
-auth = modal.Secret.from_name("neural-amp-modeler-auth")
 package = Path(__file__).parent / "src" / "nam_studio"
 
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("libsndfile1")
     .pip_install("fastapi==0.162.0", "numpy==2.5.4", "soundfile==0.14.0", "python-multipart==0.0.33", "uvicorn==0.54.0")
-    .env({"NAM_STUDIO_MODAL": "1", "NAM_STUDIO_DATA": "/data"})
+    .env({"NAM_STUDIO_DATA": "/data"})
     .add_local_dir(package, "/root/nam_studio", ignore=["__pycache__", "*.pyc"])
 )
 training_image = (
@@ -48,9 +47,9 @@ def train(job_id: str | None = None):
     return train_job("/data", job_id, commit=data.commit)
 
 
-# A single web container keeps the one-user capture connection and controls together.
+# A single web container keeps the shared capture connection and controls together.
 # GPU jobs run in a separate function and don't interrupt the studio's audio ingestion.
-@app.function(image=web_image, volumes={"/data": data}, secrets=[auth], cpu=1, memory=2048, timeout=3600, max_containers=1, scaledown_window=120)
+@app.function(image=web_image, volumes={"/data": data}, cpu=1, memory=2048, timeout=3600, max_containers=1, scaledown_window=120)
 @modal.concurrent(max_inputs=64, target_inputs=16)
 @modal.asgi_app()
 def web():

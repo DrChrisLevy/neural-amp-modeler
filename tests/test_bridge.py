@@ -14,7 +14,6 @@ from nam_studio.bridge import (
     InputDevice,
     _send_capture,
     pack_frames,
-    resolve_token,
     run_bridge,
     select_device,
     synthetic_frames,
@@ -50,17 +49,12 @@ def test_auto_selection_never_falls_back_to_microphone():
         select_device([microphone], "missing")
 
 
-def test_channels_and_environment_token_validation():
+def test_channel_validation():
     cortex = InputDevice(3, "Quad Cortex mini", 8, 48000)
     assert validate_channels(cortex, 1, 3) == 3
     for dry, wet in [(0, 3), (1, 1), (1, 9)]:
         with pytest.raises(BridgeError):
             validate_channels(cortex, dry, wet)
-    assert resolve_token(None, {"NAM_STUDIO_KEY": "example-key"}) == "example-key"
-    assert resolve_token("env:CUSTOM_KEY", {"CUSTOM_KEY": "another-key"}) == "another-key"
-    assert resolve_token(None, {}) is None
-    with pytest.raises(BridgeError):
-        resolve_token("env:NOT_SET", {})
 
 
 def test_packet_framing_channel_order_and_sample_continuity():
@@ -155,19 +149,18 @@ def test_synthetic_websocket_handshake_framing_and_record_status():
             with patch("nam_studio.bridge.input_devices", side_effect=AssertionError("Hardware must not be touched")):
                 with pytest.raises(BridgeError, match="disconnected"):
                     await asyncio.wait_for(run_bridge(
-                        f"http://127.0.0.1:{port}", synthetic=True, token="integration-key", emit=statuses.append,
+                        f"http://127.0.0.1:{port}", synthetic=True, emit=statuses.append,
                     ), timeout=5)
 
         assert received[0]["source"] == "demo"
         assert received[0]["device"] == "Synthetic test source"
         assert received[0]["sample_rate"] == 48000
         assert received[0]["channels"] == 2
-        assert received[0]["token"] == "integration-key"
+        assert "token" not in received[0]
         for sample_start, packet in zip((0, BLOCK_SIZE), received[1:]):
             assert FRAME_HEADER.unpack_from(packet) == (sample_start, BLOCK_SIZE)
             assert len(packet) == 12 + BLOCK_SIZE * 2 * 4
         assert any("Recording started" in message for message in statuses)
         assert any("Recording stopped" in message for message in statuses)
-        assert all("integration-key" not in message for message in statuses)
 
     asyncio.run(exercise())

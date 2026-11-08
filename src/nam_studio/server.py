@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import struct
 import tempfile
 import time
@@ -20,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
@@ -28,10 +27,6 @@ from starlette.middleware.gzip import GZipMiddleware
 from .artifacts import Artifacts, ArtifactResponse
 from .catalog import Catalog
 from .storage import MAX_SECONDS, SAMPLE_RATE, Store, atomic_json, identifier, now
-
-
-class Login(BaseModel):
-    key: str
 
 
 class RecordCommand(BaseModel):
@@ -61,7 +56,7 @@ def download_filename(name: str, artifact: str, epochs: int | None = None) -> st
     return f"{stem}{suffix}{Path(artifact).suffix}"
 
 
-def create_app(root: str | Path | None = None, *, key: str | None = None, volume=None, submit=None, warm=None) -> FastAPI:
+def create_app(root: str | Path | None = None, *, volume=None, submit=None, warm=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         try:
@@ -74,7 +69,6 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     studio = FastAPI(title="Neural Amp Modeler", docs_url=None, redoc_url=None, lifespan=lifespan)
     studio.add_middleware(UICompression, minimum_size=1000, compresslevel=3)
     store = Store(root or os.environ.get("NAM_STUDIO_DATA", ".data"))
-    access_key = key if key is not None else os.environ.get("NAM_STUDIO_KEY", "")
     storage_lock = asyncio.Lock()
     upload_slots = asyncio.Semaphore(2)
     bridge = {"connected": False, "device": None, "sample_rate": SAMPLE_RATE, "recording": False, "capture_id": None, "levels": {"dry": 0, "wet": 0}, "samples": 0}
@@ -82,10 +76,6 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
     monitors: set[WebSocket] = set()
     recording = None
     finalizers: set[asyncio.Task] = set()
-    app_cookie = "nam_studio_key"
-    launch_tickets: dict[str, float] = {}
-    if os.environ.get("NAM_STUDIO_MODAL") and not access_key:
-        raise RuntimeError("Hosted Neural Amp Modeler requires the neural-amp-modeler-auth Modal secret.")
 
     async def keep_worker_ready(current):
         # Warm only during a deliberate recording, with a wall-time bound even
@@ -97,13 +87,6 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             except Exception as exc:
                 logging.getLogger(__name__).warning("Training warm-up failed (%s); recording continues", type(exc).__name__)
             await asyncio.sleep(min(40, max(0, deadline - time.monotonic())))
-
-    def authorized(token: str | None) -> bool:
-        return not access_key or (isinstance(token, str) and secrets.compare_digest(token, access_key))
-
-    def request_token(request) -> str | None:
-        header = request.headers.get("authorization", "")
-        return header[7:] if header.startswith("Bearer ") else request.cookies.get(app_cookie)
 
     async def reload_store():
         if volume is not None:
@@ -144,10 +127,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
             return result
 
     @studio.middleware("http")
-    async def auth_and_headers(request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.url.path not in {"/api/config", "/api/auth"}:
-            if not authorized(request_token(request)):
-                return JSONResponse({"detail": "Unlock your workspace to continue."}, status_code=401)
+    async def response_headers(request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -160,38 +140,8 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
     @studio.get("/api/config")
-    async def config(request: Request):
-        return {"auth_required": bool(access_key), "authenticated": authorized(request_token(request)), "training_available": submit is not None, "version": "0.1.0"}
-
-    @studio.post("/api/auth")
-    async def login(body: Login, request: Request):
-        if not authorized(body.key):
-            await asyncio.sleep(0.3)
-            raise HTTPException(401, "That workspace key is incorrect.")
-        response = JSONResponse({"ok": True})
-        response.set_cookie(app_cookie, body.key, httponly=True, secure=request.url.scheme == "https", samesite="strict", max_age=7 * 86400)
-        return response
-
-    @studio.post("/api/launch")
-    async def launch(request: Request):
-        # A short-lived, single-use handoff lets the local CLI open the hosted
-        # studio without putting the durable workspace key in a browser URL.
-        for ticket, expiry in list(launch_tickets.items()):
-            if expiry < time.monotonic():
-                launch_tickets.pop(ticket, None)
-        ticket = secrets.token_urlsafe(24)
-        launch_tickets[ticket] = time.monotonic() + 60
-        return {"url": f"{str(request.base_url).rstrip('/')}/launch?ticket={ticket}"}
-
-    @studio.get("/launch")
-    async def redeem(request: Request, ticket: str):
-        expiry = launch_tickets.pop(ticket, 0)
-        if expiry < time.monotonic():
-            raise HTTPException(401, "This launch link expired. Open the studio again from your project.")
-        response = RedirectResponse("/", status_code=303)
-        response.set_cookie(app_cookie, access_key, httponly=True, secure=request.url.scheme == "https", samesite="strict", max_age=7 * 86400)
-        response.headers["Cache-Control"] = "no-store"
-        return response
+    async def config():
+        return {"training_available": submit is not None, "version": "0.1.0"}
 
     @studio.get("/api/state")
     async def state(revision: str | None = None):
@@ -211,9 +161,6 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
 
     @studio.websocket("/ws/monitor")
     async def monitor(ws: WebSocket):
-        if not authorized(ws.cookies.get(app_cookie)):
-            await ws.close(code=1008)
-            return
         try:
             await ws.accept()
         except (WebSocketDisconnect, RuntimeError):
@@ -291,7 +238,7 @@ def create_app(root: str | Path | None = None, *, key: str | None = None, volume
         except Exception:
             await ws.close(code=1008)
             return
-        if not authorized(hello.get("token")) or hello.get("type") != "hello":
+        if hello.get("type") != "hello":
             await ws.close(code=1008)
             return
         if bridge_ws is not None or hello.get("sample_rate") != SAMPLE_RATE or hello.get("channels") != 2:
