@@ -58,7 +58,7 @@ If you already have WAV pairs, the steps above are all you need. Mini users can 
 
 ### Capture with the standard NAM test WAV
 
-The automated capture command supports **macOS and Mini CorOS 4.1.1** through the unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp) adapter. It plays the standard test signal through your selected preset instead of recording your playing.
+The automated capture command supports **macOS and Mini CorOS 4.1.1** through the unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp) adapter. It plays [NAM's standard input.wav](https://drive.google.com/file/d/1KbaS4oXXNEuh2aCPLwKrPdf5KFOjda8G/view) through your selected preset and records the processed output.
 
 Choose the preset and scene, disable time effects, then **quit Cortex Control and stop the live bridge and other audio apps**. Keep the Mini connected and its controls unchanged. Run:
 
@@ -68,7 +68,7 @@ uv run neural-amp-modeler input
 uv run --extra capture neural-amp-modeler capture --name "My preset"
 ```
 
-The `input` command downloads the test WAV once. Capture takes about **3 minutes 10 seconds** plus setup and restores the original input routing afterward. Upload `input.wav` and `output.wav` from the new timestamped folder under `.data/pairs/`, then train as usual.
+The `input` command automatically downloads the WAV to `.data/input.wav` the first time and reuses it on later runs. The `capture` command uses that saved file. Capture takes about **3 minutes 10 seconds** plus setup and restores the original input routing afterward. Upload `input.wav` and `output.wav` from the new timestamped folder under `.data/pairs/`, then train as usual.
 
 ### Record yourself playing
 
