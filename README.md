@@ -60,7 +60,7 @@ If you already have WAV pairs, the steps above are all you need. Mini users can 
 
 The automated capture command supports **macOS and Mini CorOS 4.1.1** through the unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp) adapter. It plays [NAM's standard input.wav](https://drive.google.com/file/d/1KbaS4oXXNEuh2aCPLwKrPdf5KFOjda8G/view) through your selected preset and records the processed output.
 
-Choose the preset and scene, disable time effects, then **quit Cortex Control and stop the live bridge and other audio apps**. Keep the Mini connected and its controls unchanged. Run:
+Connect the Mini by USB and set its USB assignment to **1/2 dry, 3/4 wet**. Choose the preset and scene, disable delay, reverb, and modulation, then **quit Cortex Control and stop the live bridge and other audio apps**. Keep the Mini connected and its controls unchanged. Run:
 
 ```sh
 uv sync --extra capture
