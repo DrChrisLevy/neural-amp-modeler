@@ -6,7 +6,7 @@ A web app for turning paired input/output WAV files into playable Neural Amp Mod
 
 ## Run your own app
 
-You need [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, and a [Modal account](https://modal.com). Python 3.12+ is required; uv can install it automatically. Modal builds the frontend in the cloud, so you don't need Node.js locally. Training uses your Modal account's GPU credits.
+You need [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, and a [Modal account](https://modal.com). Python 3.12+ is required; uv can install it automatically.
 
 ```sh
 git clone https://github.com/DrChrisLevy/neural-amp-modeler.git
@@ -17,11 +17,9 @@ uv run modal setup
 uv run modal deploy --strategy recreate modal_app.py
 ```
 
-Open the web URL printed by the deployment. Modal creates the app and its `neural-amp-modeler-data` storage volume in your active workspace. Audio and trained models persist there between visits. No personal URL, `.env` file, or app secret is needed.
+Open the web URL printed by the deployment. Modal creates the app and its `neural-amp-modeler-data` storage volume in your active workspace. Audio and trained models persist there between visits.
 
 **This is a public demo with a shared library.** Anyone with your deployment URL can upload, train, download, and delete pairs. There is no login.
-
-To deploy changes, rerun the deploy command when recording and training are idle. Modal rebuilds changed files and reuses cached dependencies. For local UI development, see [frontend/README.md](frontend/README.md).
 
 ## Upload a WAV pair
 
