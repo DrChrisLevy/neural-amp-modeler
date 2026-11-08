@@ -32,7 +32,7 @@ Bring two files containing **the same signal before and after processing**:
 
 For a new capture, start with [NAM's standard input.wav](https://drive.google.com/file/d/1KbaS4oXXNEuh2aCPLwKrPdf5KFOjda8G/view). Play it through your gear and record the processed result, then upload the original file as **Input** and your recording as **Output**. Keep both files at their full length, including the silence and test pulses.
 
-Both files must be **mono, 48 kHz, and exactly the same length**. Use 12 seconds to 10 minutes of audio, without clipping, up to 128 MB per file. Capture a fixed amp, drive, or cab sound with delay, reverb, and modulation disabled. Filenames can be anything.
+Both files must be **mono, 48 kHz, and exactly the same length**.
 
 1. In **Your Library**, click **Add pair**.
 2. Name the pair and choose or drop your input and output WAVs.
