@@ -56,18 +56,6 @@ The **Compare audio** tab lets you listen to the dry signal, recorded reference,
 
 If you already have WAV pairs, the steps above are all you need. Mini users can also create pairs over USB.
 
-### Record yourself playing
-
-Connect the Mini by USB, choose your preset and scene, and set its USB assignment to **1/2 dry, 3/4 wet** at **48 kHz**. Disable delay, reverb, and modulation for the sound you want to model.
-
-From the repository folder, run:
-
-```sh
-uv run neural-amp-modeler bridge --url "YOUR_MODAL_WEB_URL"
-```
-
-Replace `YOUR_MODAL_WEB_URL` with your deployment's URL. In the app, choose **Add pair → Record a pair**. The connection is detected automatically. The bridge captures dry USB channel 1 and processed channel 3 while you play; stopping the recording saves the pair to your library. Keep Terminal open while recording, and press **Ctrl+C** there when finished.
-
 ### Capture with the standard NAM test WAV
 
 The automated capture command supports **macOS and Mini CorOS 4.1.1** through the unofficial [qc-mcp](https://github.com/lexasoft123/qc-mcp) adapter. It plays the standard test signal through your selected preset instead of recording your playing.
@@ -81,3 +69,15 @@ uv run --extra capture neural-amp-modeler capture --name "My preset"
 ```
 
 The `input` command downloads the test WAV once. Capture takes about **3 minutes 10 seconds** plus setup and restores the original input routing afterward. Upload `input.wav` and `output.wav` from the new timestamped folder under `.data/pairs/`, then train as usual.
+
+### Record yourself playing
+
+Connect the Mini by USB, choose your preset and scene, and set its USB assignment to **1/2 dry, 3/4 wet** at **48 kHz**. Disable delay, reverb, and modulation for the sound you want to model.
+
+From the repository folder, run:
+
+```sh
+uv run neural-amp-modeler bridge --url "YOUR_MODAL_WEB_URL"
+```
+
+Replace `YOUR_MODAL_WEB_URL` with your deployment's URL. In the app, choose **Add pair → Record a pair**. The connection is detected automatically. The bridge captures dry USB channel 1 and processed channel 3 while you play; stopping the recording saves the pair to your library. Keep Terminal open while recording, and press **Ctrl+C** there when finished.
